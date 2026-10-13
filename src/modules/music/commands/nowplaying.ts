@@ -1,5 +1,5 @@
-import { SlashCommandBuilder, ButtonStyle } from "discord.js";
-import type { ChatInputCommandInteraction, MessageComponentInteraction } from "discord.js";
+import { ButtonStyle } from "discord.js";
+import type { MessageComponentInteraction } from "discord.js";
 import {
   FLAGS_V2,
   FLAGS_V2_EPHEMERAL,
@@ -16,21 +16,19 @@ import {
   type LoopMode,
 } from "../func/player.ts";
 import { getSettings } from "../func/db.ts";
-
-export const data = new SlashCommandBuilder()
-  .setName("nowplaying")
-  .setDescription("Affiche le morceau en cours avec barre de progression et contrôles.");
+import type { HubInteraction } from "./_hub.ts";
+import { asQueueInteraction } from "./_hub.ts";
 
 function controlsRow() {
   return actionRow(
-    button("nowplaying:pause", "", ButtonStyle.Secondary, "⏸️"),
-    button("nowplaying:skip", "", ButtonStyle.Secondary, "⏭️"),
-    button("nowplaying:stop", "", ButtonStyle.Danger, "⏹️"),
-    button("nowplaying:loop", "", ButtonStyle.Secondary, "🔁")
+    button("musique:nppause", "", ButtonStyle.Secondary, "⏸️"),
+    button("musique:npskip", "", ButtonStyle.Secondary, "⏭️"),
+    button("musique:npstop", "", ButtonStyle.Danger, "⏹️"),
+    button("musique:nploop", "", ButtonStyle.Secondary, "🔁")
   );
 }
 
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function runNowPlaying(interaction: HubInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
@@ -46,7 +44,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
 const LOOPS: LoopMode[] = ["off", "track", "queue"];
 
-export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+export async function handleNowPlayingControls(interaction: MessageComponentInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) return;
   const queue = getQueue(guild.id);
@@ -54,10 +52,10 @@ export async function handleComponent(interaction: MessageComponentInteraction):
     await interaction.update({ components: [errPanel("⏹️ Rien n'est en cours de lecture.")], flags: FLAGS_V2 });
     return;
   }
-  const action = interaction.customId.split(":")[1];
+  const action = interaction.customId.split(":")[1]?.replace(/^np/, "") ?? "";
 
   if (action === "skip") {
-    if (canControl(interaction)) {
+    if (canControl(asQueueInteraction(interaction))) {
       queue.skip();
       await interaction.update({ components: [nowPlayingPanel(queue), controlsRow()], flags: FLAGS_V2 });
       return;
@@ -81,7 +79,7 @@ export async function handleComponent(interaction: MessageComponentInteraction):
     return;
   }
 
-  if (!canControl(interaction)) {
+  if (!canControl(asQueueInteraction(interaction))) {
     await interaction.reply({ components: [errPanel("Seul un DJ peut utiliser ces contrôles.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }

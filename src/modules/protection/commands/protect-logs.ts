@@ -1,5 +1,20 @@
-import { ChannelType, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction, Guild } from "discord.js";
+import {
+  ActionRowBuilder,
+  ChannelType,
+  ModalBuilder,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  Guild,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+} from "discord.js";
 import {
   FLAGS_V2,
   FLAGS_V2_EPHEMERAL,
@@ -16,31 +31,73 @@ import { BLURPLE, isOwnerOrWhitelisted, needGuild, replyErr } from "./_shared.ts
 export const data = new SlashCommandBuilder()
   .setName("protect-logs")
   .setDescription("Configurer les salons de logs du serveur.")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-  .addSubcommand((s) => s.setName("voir").setDescription("Voir les salons de logs configurés."))
-  .addSubcommand((s) =>
-    s.setName("auto").setDescription("Créer automatiquement les salons de logs dans une catégorie dédiée.")
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("definir")
-      .setDescription("Définir manuellement les salons de logs.")
-      .addChannelOption((o) =>
-        o.setName("antiraid").setDescription("Salon des logs anti-raid.").addChannelTypes(ChannelType.GuildText)
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
+
+const CMD = "protect-logs";
+
+const HUB_OPTIONS = [
+  { label: "Voir les salons", value: "voir", emoji: "🧾", description: "Afficher les salons de logs configurés" },
+  { label: "Création automatique", value: "auto", emoji: "⚡", description: "Créer les salons de logs automatiquement" },
+  { label: "Définir manuellement", value: "definir", emoji: "✏️", description: "Choisir chaque salon de logs" },
+];
+
+function menuRow() {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${CMD}:menu`)
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      HUB_OPTIONS.map((o) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(o.label)
+          .setValue(o.value)
+          .setDescription(o.description)
+          .setEmoji(o.emoji)
       )
-      .addChannelOption((o) =>
-        o.setName("moderation").setDescription("Salon des logs de modération.").addChannelTypes(ChannelType.GuildText)
-      )
-      .addChannelOption((o) =>
-        o.setName("membres").setDescription("Salon des logs des membres.").addChannelTypes(ChannelType.GuildText)
-      )
-      .addChannelOption((o) =>
-        o.setName("serveur").setDescription("Salon des logs du serveur.").addChannelTypes(ChannelType.GuildText)
-      )
-      .addChannelOption((o) =>
-        o.setName("messages").setDescription("Salon des logs des messages.").addChannelTypes(ChannelType.GuildText)
-      )
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function hubPayload(guild: Guild) {
+  const body = panel(
+    [textBlock(`# 🧾 Logs du serveur\nConfigure les salons de logs sur **${guild.name}**.`)],
+    BLURPLE
   );
+  return {
+    components: [body, menuRow()],
+    flags: FLAGS_V2_EPHEMERAL,
+  };
+}
+
+/** Extrait un ID de salon depuis une mention <#id> ou un ID brut. */
+function parseChannelId(raw: string): string | null {
+  const m = raw.trim().match(/^(?:<#(\d+)>|(\d{15,20}))$/);
+  return m?.[1] ?? m?.[2] ?? null;
+}
+
+function definirModal() {
+  const modal = new ModalBuilder().setCustomId(`${CMD}:modal:definir`).setTitle("Salons de logs");
+  const fields: [string, string, string][] = [
+    ["antiraid", "Anti-raid", "Mention ou ID du salon (vide = inchangé)"],
+    ["moderation", "Modération", "Mention ou ID du salon (vide = inchangé)"],
+    ["membres", "Membres", "Mention ou ID du salon (vide = inchangé)"],
+    ["serveur", "Serveur", "Mention ou ID du salon (vide = inchangé)"],
+    ["messages", "Messages", "Mention ou ID du salon (vide = inchangé)"],
+  ];
+  for (const [id, label, placeholder] of fields) {
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId(id)
+          .setLabel(label)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(40)
+          .setPlaceholder(placeholder)
+      )
+    );
+  }
+  return modal;
+}
 
 const LOG_DEFS = [
   { key: "antiraid", label: "Anti-raid", name: "logs-antiraid" },
@@ -120,35 +177,66 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await replyErr(interaction, "❌ Vous devez être le propriétaire du serveur ou être dans la liste blanche.");
     return;
   }
-  const cfg = getProtectConfig(guild.id);
-  const sub = interaction.options.getSubcommand();
+  await interaction.reply({ ...hubPayload(guild), flags: FLAGS_V2_EPHEMERAL });
+}
 
-  if (sub === "voir") {
-    await interaction.reply({ components: [logsPanel(guild, cfg)], flags: FLAGS_V2 });
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const parts = interaction.customId.split(":");
+  if (parts[0] !== CMD) return;
+  if (!isOwnerOrWhitelisted(guild, interaction.user.id)) {
+    await replyErr(interaction, "❌ Vous devez être le propriétaire du serveur ou être dans la liste blanche.");
+    return;
+  }
+  if (parts[1] !== "menu" || !interaction.isStringSelectMenu()) return;
+  const cfg = getProtectConfig(guild.id);
+  const action = interaction.values[0];
+
+  if (action === "voir") {
+    await interaction.update({ components: [logsPanel(guild, cfg), menuRow()], flags: FLAGS_V2 });
     return;
   }
 
-  if (sub === "auto") {
-    await interaction.deferReply({ flags: FLAGS_V2_EPHEMERAL });
+  if (action === "auto") {
+    await interaction.deferUpdate();
     try {
       await autoConfigure(guild, cfg);
       saveProtectConfig(guild.id, cfg);
     } catch (err) {
       await interaction.editReply({
-        components: [msgPanel(`❌ Échec de la configuration automatique : ${err instanceof Error ? err.message : "erreur inconnue"}`, BLURPLE)],
+        components: [
+          msgPanel(`❌ Échec de la configuration automatique : ${err instanceof Error ? err.message : "erreur inconnue"}`, BLURPLE),
+          menuRow(),
+        ],
         flags: FLAGS_V2,
       });
       return;
     }
     await interaction.editReply({
-      components: [okPanel("✅ Salons de logs créés dans la catégorie **Logs**."), logsPanel(guild, cfg)],
+      components: [okPanel("✅ Salons de logs créés dans la catégorie **Logs**."), logsPanel(guild, cfg), menuRow()],
       flags: FLAGS_V2,
     });
     return;
   }
 
-  // definir
-  const mapping: [string, LogKey][] = [
+  if (action === "definir") {
+    await interaction.showModal(definirModal());
+    return;
+  }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const parts = interaction.customId.split(":");
+  if (parts[0] !== CMD || parts[1] !== "modal" || parts[2] !== "definir") return;
+  if (!isOwnerOrWhitelisted(guild, interaction.user.id)) {
+    await replyErr(interaction, "❌ Vous devez être le propriétaire du serveur ou être dans la liste blanche.");
+    return;
+  }
+  const cfg = getProtectConfig(guild.id);
+  const mapping: [string, "antiraid" | "moderation" | "members" | "server" | "messages"][] = [
     ["antiraid", "antiraid"],
     ["moderation", "moderation"],
     ["membres", "members"],
@@ -156,12 +244,25 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     ["messages", "messages"],
   ];
   let changed = 0;
-  for (const [opt, key] of mapping) {
-    const ch = interaction.options.getChannel(opt);
-    if (ch) {
-      cfg.logs[key] = ch.id;
-      changed++;
+  const errors: string[] = [];
+  for (const [field, key] of mapping) {
+    const raw = interaction.fields.getTextInputValue(field).trim();
+    if (!raw) continue;
+    const id = parseChannelId(raw);
+    const ch = id ? guild.channels.cache.get(id) : null;
+    if (!ch || !ch.isTextBased()) {
+      errors.push(`\`${raw}\` : salon invalide.`);
+      continue;
     }
+    cfg.logs[key] = ch.id;
+    changed++;
+  }
+  if (errors.length) {
+    await interaction.reply({
+      components: [msgPanel(`❌ ${errors.join(" ")}`, BLURPLE)],
+      flags: FLAGS_V2_EPHEMERAL,
+    });
+    return;
   }
   if (!changed) {
     await replyErr(interaction, "❌ Précisez au moins un salon à configurer.");
@@ -170,6 +271,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   saveProtectConfig(guild.id, cfg);
   await interaction.reply({
     components: [okPanel(`✅ ${changed} salon${changed > 1 ? "s" : ""} de logs mis à jour.`), logsPanel(guild, cfg)],
-    flags: FLAGS_V2,
+    flags: FLAGS_V2_EPHEMERAL,
   });
 }

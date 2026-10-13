@@ -1,9 +1,24 @@
-import { SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction, Guild } from "discord.js";
+import {
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ActionRowBuilder,
+  ModalBuilder,
+  LabelBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+  Guild,
+} from "discord.js";
 import {
   FLAGS_V2,
   FLAGS_V2_EPHEMERAL,
   GOLD,
+  ACCENT,
   okPanel,
   errPanel,
   panel,
@@ -15,15 +30,7 @@ import { getWelcome } from "../func/db-gestion.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("birthday")
-  .setDescription("Enregistre ton anniversaire pour qu'il soit fêté.")
-  .addSubcommand((s) =>
-    s
-      .setName("set")
-      .setDescription("Enregistre ton anniversaire.")
-      .addStringOption((o) => o.setName("date").setDescription("Ta date au format JJ/MM (ex : 25/12).").setRequired(true).setMaxLength(5))
-  )
-  .addSubcommand((s) => s.setName("remove").setDescription("Supprime ton anniversaire."))
-  .addSubcommand((s) => s.setName("list").setDescription("Affiche les prochains anniversaires."));
+  .setDescription("Enregistre ton anniversaire pour qu'il soit fêté.");
 
 /** Valide « JJ/MM » et retourne { day, month } ou null. */
 export function parseBirthday(input: string): { day: number; month: number } | null {
@@ -47,54 +54,115 @@ export function daysUntil(month: number, day: number, now = new Date()): number 
   return Math.round((next.getTime() - startOfToday.getTime()) / 86_400_000);
 }
 
+function hubContainer() {
+  const container = panel([textBlock("## 🎂 Anniversaires\n*Choisis une action ci-dessous.*")], ACCENT);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("birthday:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Enregistrer mon anniversaire")
+        .setValue("set")
+        .setDescription("Format JJ/MM, ex : 25/12.")
+        .setEmoji("🎂"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Supprimer mon anniversaire")
+        .setValue("remove")
+        .setDescription("Retire ton anniversaire.")
+        .setEmoji("🗑️"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Voir les prochains")
+        .setValue("list")
+        .setDescription("Affiche les prochains anniversaires.")
+        .setEmoji("📅")
+    );
+  container.addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+  return container;
+}
+
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  await interaction.reply({ components: [hubContainer()], flags: FLAGS_V2_EPHEMERAL });
+}
+
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  if (!interaction.isStringSelectMenu() || interaction.customId !== "birthday:menu") return;
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const sub = interaction.options.getSubcommand();
+  const action = interaction.values[0];
   const userId = interaction.user.id;
 
-  if (sub === "set") {
-    const parsed = parseBirthday(interaction.options.getString("date", true));
-    if (!parsed) {
-      await interaction.reply({ components: [errPanel("Date invalide. Utilise le format JJ/MM, ex : `25/12`.")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    setBirthday(guild.id, userId, parsed.month, parsed.day);
-    const label = `${String(parsed.day).padStart(2, "0")}/${String(parsed.month).padStart(2, "0")}`;
-    await interaction.reply({ components: [okPanel(`🎂 Anniversaire enregistré : **${label}**.`)], flags: FLAGS_V2_EPHEMERAL });
+  if (action === "set") {
+    const modal = new ModalBuilder().setCustomId("birthday:modal:set").setTitle("Enregistrer mon anniversaire");
+    modal.addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Date de naissance")
+        .setDescription("Format JJ/MM, ex : 25/12")
+        .setTextInputComponent(
+          new TextInputBuilder()
+            .setCustomId("date")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(5)
+            .setPlaceholder("25/12")
+        )
+    );
+    await interaction.showModal(modal);
     return;
   }
 
-  if (sub === "remove") {
+  if (action === "remove") {
     const removed = removeBirthday(guild.id, userId);
-    await interaction.reply({
+    await interaction.update({
       components: [removed ? okPanel("Anniversaire supprimé.") : errPanel("Tu n'as pas d'anniversaire enregistré.")],
-      flags: FLAGS_V2_EPHEMERAL,
+      flags: FLAGS_V2,
     });
     return;
   }
 
-  // list : prochains anniversaires
-  const birthdays = listBirthdays(guild.id);
-  if (birthdays.length === 0) {
-    await interaction.reply({ components: [errPanel("Aucun anniversaire enregistré. Utilise `/birthday set`.")], flags: FLAGS_V2_EPHEMERAL });
+  if (action === "list") {
+    const birthdays = listBirthdays(guild.id);
+    if (birthdays.length === 0) {
+      await interaction.update({ components: [errPanel("Aucun anniversaire enregistré.")], flags: FLAGS_V2 });
+      return;
+    }
+    const upcoming = birthdays
+      .map((b) => ({ ...b, in: daysUntil(b.month, b.day) }))
+      .sort((a, b) => a.in - b.in)
+      .slice(0, 15);
+    const lines = upcoming
+      .map((b) => {
+        const label = `${String(b.day).padStart(2, "0")}/${String(b.month).padStart(2, "0")}`;
+        const when = b.in === 0 ? "🎉 **aujourd'hui**" : `dans ${b.in} jour(s)`;
+        return `<@${b.user_id}> — ${label} (${when})`;
+      })
+      .join("\n");
+    await interaction.update({ components: [panel([textBlock(`## 🎂 Prochains anniversaires\n${lines}`)], GOLD)], flags: FLAGS_V2 });
     return;
   }
-  const upcoming = birthdays
-    .map((b) => ({ ...b, in: daysUntil(b.month, b.day) }))
-    .sort((a, b) => a.in - b.in)
-    .slice(0, 15);
-  const lines = upcoming
-    .map((b) => {
-      const label = `${String(b.day).padStart(2, "0")}/${String(b.month).padStart(2, "0")}`;
-      const when = b.in === 0 ? "🎉 **aujourd'hui**" : `dans ${b.in} jour(s)`;
-      return `<@${b.user_id}> — ${label} (${when})`;
-    })
-    .join("\n");
-  await interaction.reply({ components: [panel([textBlock(`## 🎂 Prochains anniversaires\n${lines}`)], GOLD)], flags: FLAGS_V2_EPHEMERAL });
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  if (interaction.customId !== "birthday:modal:set") return;
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  const parsed = parseBirthday(interaction.fields.getTextInputValue("date"));
+  if (!parsed) {
+    await interaction.reply({ components: [errPanel("Date invalide. Utilise le format JJ/MM, ex : `25/12`.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  setBirthday(guild.id, interaction.user.id, parsed.month, parsed.day);
+  const label = `${String(parsed.day).padStart(2, "0")}/${String(parsed.month).padStart(2, "0")}`;
+  await interaction.reply({ components: [okPanel(`🎂 Anniversaire enregistré : **${label}**.`)], flags: FLAGS_V2_EPHEMERAL });
 }
 
 /** Annonce les anniversaires du jour (utilisé par le scheduler). */

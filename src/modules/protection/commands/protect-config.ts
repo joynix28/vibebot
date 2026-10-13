@@ -7,6 +7,8 @@ import {
   PermissionFlagsBits,
   RoleSelectMenuBuilder,
   SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -18,6 +20,7 @@ import type {
 } from "discord.js";
 import {
   FLAGS_V2,
+  FLAGS_V2_EPHEMERAL,
   actionRow,
   button,
   msgPanel,
@@ -32,14 +35,52 @@ import { BLURPLE, isOwnerOrWhitelisted, needGuild, replyErr, statusLine } from "
 export const data = new SlashCommandBuilder()
   .setName("protect-config")
   .setDescription("Configurer la protection du serveur (anti-raid, anti-spam, automod, bienvenue).")
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-  .addSubcommand((s) => s.setName("vue-ensemble").setDescription("Vue d'ensemble de la configuration."))
-  .addSubcommand((s) => s.setName("antiraid").setDescription("Configurer l'anti-raid."))
-  .addSubcommand((s) => s.setName("antispam").setDescription("Configurer l'anti-spam et le raid automatique."))
-  .addSubcommand((s) => s.setName("automod").setDescription("Configurer la modération automatique."))
-  .addSubcommand((s) => s.setName("welcome").setDescription("Configurer les actions de bienvenue."));
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const CMD = "protect-config";
+
+const HUB_OPTIONS = [
+  { label: "Vue d'ensemble", value: "main", emoji: "🏠", description: "Résumé de la configuration actuelle" },
+  { label: "Anti-raid", value: "antiraid", emoji: "⚔️", description: "Protections contre les raids" },
+  { label: "Anti-spam", value: "antispam", emoji: "🧨", description: "Anti-spam et raid automatique" },
+  { label: "Automod", value: "automod", emoji: "🛠️", description: "Modération automatique des liens" },
+  { label: "Bienvenue", value: "welcome", emoji: "👋", description: "Actions à l'arrivée des membres" },
+];
+
+function hubPayload(guild: Guild, cfg: ProtectConfig) {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${CMD}:menu`)
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      HUB_OPTIONS.map((o) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(o.label)
+          .setValue(o.value)
+          .setDescription(o.description)
+          .setEmoji(o.emoji)
+      )
+    );
+  const body = panel(
+    [
+      textBlock(`# 🛡️ Configuration de la protection\nServeur **${guild.name}** — choisis une catégorie dans le menu ci-dessous.`),
+      sepBlock(),
+      textBlock(
+        [
+          `🏠 **Vue d'ensemble** — résumé de la configuration.`,
+          `⚔️ **Anti-raid** — ${Object.values(cfg.antiraid).filter((v) => v === true).length}/7 protections actives.`,
+          `🧨 **Anti-spam** — ${statusLine(cfg.antispam.enabled)}.`,
+          `🛠️ **Automod** — modération automatique des liens et invitations.`,
+          `👋 **Bienvenue** — rôles et ghost ping à l'arrivée.`,
+        ].join("\n")
+      ),
+    ],
+    BLURPLE
+  );
+  return {
+    components: [body, new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+    flags: FLAGS_V2,
+  };
+}
 
 function navRow(): ReturnType<typeof actionRow> {
   return actionRow(
@@ -251,9 +292,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
   const cfg = getProtectConfig(guild.id);
-  const sub = interaction.options.getSubcommand();
-  const section = sub === "vue-ensemble" ? "main" : sub;
-  await interaction.reply(sectionPayload(guild, cfg, section));
+  await interaction.reply({ ...hubPayload(guild, cfg), flags: FLAGS_V2_EPHEMERAL });
 }
 
 export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
@@ -270,7 +309,11 @@ export async function handleComponent(interaction: MessageComponentInteraction):
   const refresh = (section: string) => interaction.update(sectionPayload(guild, cfg, section));
 
   if (action === "menu") {
-    await refresh(parts[2] ?? "main");
+    if (interaction.isStringSelectMenu() && parts.length === 2) {
+      await refresh(interaction.values[0] ?? "main");
+    } else {
+      await refresh(parts[2] ?? "main");
+    }
     return;
   }
 

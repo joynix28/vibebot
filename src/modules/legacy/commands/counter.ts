@@ -1,8 +1,26 @@
-import { SlashCommandBuilder, PermissionFlagsBits, ChannelType } from "discord.js";
-import type { ChatInputCommandInteraction, Guild } from "discord.js";
 import {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  ChannelType,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ActionRowBuilder,
+  ModalBuilder,
+  LabelBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+  Guild,
+} from "discord.js";
+import {
+  FLAGS_V2,
   FLAGS_V2_EPHEMERAL,
   BLUE,
+  ACCENT,
   okPanel,
   errPanel,
   panel,
@@ -14,41 +32,7 @@ import { addCounter, removeCounter, listCounters, allCounters } from "../func/db
 export const data = new SlashCommandBuilder()
   .setName("counter")
   .setDescription("Affiche des compteurs (membres, bots…) dans le nom de salons vocaux.")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-  .addSubcommand((s) =>
-    s
-      .setName("add")
-      .setDescription("Ajoute un compteur sur un salon vocal.")
-      .addChannelOption((o) =>
-        o.setName("salon").setDescription("Le salon vocal à renommer.").addChannelTypes(ChannelType.GuildVoice).setRequired(true)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("type")
-          .setDescription("Ce que le compteur affiche.")
-          .setRequired(true)
-          .addChoices(
-            { name: "Membres", value: "membres" },
-            { name: "Humains", value: "humains" },
-            { name: "Bots", value: "bots" },
-            { name: "En ligne", value: "en-ligne" },
-            { name: "Salons", value: "salons" },
-            { name: "Boosts", value: "boosts" }
-          )
-      )
-      .addStringOption((o) =>
-        o.setName("modele").setDescription("Modèle du nom, {count} = le nombre. Ex : « 👥 Membres : {count} ».")
-      )
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("remove")
-      .setDescription("Retire un compteur d'un salon vocal.")
-      .addChannelOption((o) =>
-        o.setName("salon").setDescription("Le salon vocal concerné.").addChannelTypes(ChannelType.GuildVoice).setRequired(true)
-      )
-  )
-  .addSubcommand((s) => s.setName("list").setDescription("Liste les compteurs du serveur."));
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
 export const COUNTER_KINDS: Record<string, string> = {
   membres: "Membres",
@@ -112,18 +96,124 @@ export async function refreshCounter(guild: Guild, channelId: string, kind: stri
   }
 }
 
+function hubContainer() {
+  const container = panel([textBlock("## 📊 Compteurs\n*Choisis une action ci-dessous.*")], ACCENT);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("counter:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Ajouter un compteur")
+        .setValue("add")
+        .setDescription("Affiche un compteur dans le nom d'un salon vocal.")
+        .setEmoji("➕"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Retirer un compteur")
+        .setValue("remove")
+        .setDescription("Retire le compteur d'un salon vocal.")
+        .setEmoji("➖"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Lister les compteurs")
+        .setValue("list")
+        .setDescription("Affiche les compteurs du serveur.")
+        .setEmoji("📋")
+    );
+  container.addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+  return container;
+}
+
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  await interaction.reply({ components: [hubContainer()], flags: FLAGS_V2_EPHEMERAL });
+}
+
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  if (!interaction.isStringSelectMenu() || interaction.customId !== "counter:menu") return;
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const sub = interaction.options.getSubcommand();
+  const action = interaction.values[0];
 
-  if (sub === "add") {
-    const channel = interaction.options.getChannel("salon", true);
-    const kind = interaction.options.getString("type", true);
-    const template = interaction.options.getString("modele") ?? DEFAULT_TEMPLATES[kind] ?? "{count}";
+  if (action === "add") {
+    const modal = new ModalBuilder().setCustomId("counter:modal:add").setTitle("Ajouter un compteur");
+    modal.addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Salon vocal")
+        .setDescription("Mentionne le salon vocal ou colle son ID.")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("salon").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50)
+        ),
+      new LabelBuilder()
+        .setLabel("Type")
+        .setDescription("membres, humains, bots, en-ligne, salons ou boosts")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("type").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20)
+        ),
+      new LabelBuilder()
+        .setLabel("Modèle (optionnel)")
+        .setDescription("{count} = le nombre. Ex : 👥 Membres : {count}")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("modele").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(100)
+        )
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === "remove") {
+    const modal = new ModalBuilder().setCustomId("counter:modal:remove").setTitle("Retirer un compteur");
+    modal.addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Salon vocal")
+        .setDescription("Mentionne le salon vocal ou colle son ID.")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("salon").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50)
+        )
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === "list") {
+    const counters = listCounters(guild.id);
+    if (counters.length === 0) {
+      await interaction.update({ components: [errPanel("Aucun compteur configuré.")], flags: FLAGS_V2 });
+      return;
+    }
+    const lines = counters
+      .map((c, i) => `\`${i + 1}.\` <#${c.channel_id}> — **${COUNTER_KINDS[c.kind] ?? c.kind}** — \`${c.template}\``)
+      .join("\n");
+    await interaction.update({ components: [panel([textBlock(`## 📊 Compteurs\n${lines}`)], BLUE)], flags: FLAGS_V2 });
+    return;
+  }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+
+  if (interaction.customId === "counter:modal:add") {
+    const channelId = interaction.fields.getTextInputValue("salon").match(/\d{17,20}/)?.[0];
+    const channel = channelId ? guild.channels.cache.get(channelId) : null;
+    if (!channel || channel.type !== ChannelType.GuildVoice) {
+      await interaction.reply({ components: [errPanel("Salon vocal introuvable. Mentionne un salon vocal valide.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    const kind = interaction.fields.getTextInputValue("type").trim().toLowerCase();
+    if (!COUNTER_KINDS[kind]) {
+      await interaction.reply({ components: [errPanel(`Type invalide. Choisis parmi : ${Object.keys(COUNTER_KINDS).join(", ")}.`)], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    const modeleRaw = interaction.fields.getTextInputValue("modele")?.trim();
+    const template = modeleRaw || DEFAULT_TEMPLATES[kind] || "{count}";
     addCounter(guild.id, channel.id, kind, template);
     await refreshCounter(guild, channel.id, kind, template);
     const preview = applyCounterTemplate(template, await computeCounterValue(guild, kind));
@@ -138,26 +228,19 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  if (sub === "remove") {
-    const channel = interaction.options.getChannel("salon", true);
-    const removed = removeCounter(guild.id, channel.id);
+  if (interaction.customId === "counter:modal:remove") {
+    const channelId = interaction.fields.getTextInputValue("salon").match(/\d{17,20}/)?.[0];
+    if (!channelId) {
+      await interaction.reply({ components: [errPanel("Salon introuvable. Mentionne un salon vocal valide.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    const removed = removeCounter(guild.id, channelId);
     await interaction.reply({
-      components: [removed ? okPanel(`Compteur retiré de <#${channel.id}>.`) : errPanel(`Aucun compteur sur <#${channel.id}>.`)],
+      components: [removed ? okPanel(`Compteur retiré de <#${channelId}>.`) : errPanel(`Aucun compteur sur <#${channelId}>.`)],
       flags: FLAGS_V2_EPHEMERAL,
     });
     return;
   }
-
-  // list
-  const counters = listCounters(guild.id);
-  if (counters.length === 0) {
-    await interaction.reply({ components: [errPanel("Aucun compteur configuré. Utilise `/counter add`.")], flags: FLAGS_V2_EPHEMERAL });
-    return;
-  }
-  const lines = counters
-    .map((c, i) => `\`${i + 1}.\` <#${c.channel_id}> — **${COUNTER_KINDS[c.kind] ?? c.kind}** — \`${c.template}\``)
-    .join("\n");
-  await interaction.reply({ components: [panel([textBlock(`## 📊 Compteurs\n${lines}`)], BLUE)], flags: FLAGS_V2_EPHEMERAL });
 }
 
 /** Utilisé par le scheduler : rafraîchit tous les compteurs de tous les serveurs. */

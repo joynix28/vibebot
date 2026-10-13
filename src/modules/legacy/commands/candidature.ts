@@ -7,6 +7,10 @@ import {
   LabelBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ChannelSelectMenuBuilder,
+  ActionRowBuilder,
 } from "discord.js";
 import type {
   ChatInputCommandInteraction,
@@ -14,6 +18,10 @@ import type {
   ModalSubmitInteraction,
   TextBasedChannel,
   GuildMember,
+  Guild,
+  User,
+  Client,
+  ContainerBuilder,
 } from "discord.js";
 import {
   FLAGS_V2,
@@ -50,40 +58,14 @@ import type { Recruitment, Application } from "../func/db-plus.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("candidature")
-  .setDescription("Gère les recrutements et candidatures du serveur.")
-  .addSubcommand((s) =>
-    s
-      .setName("creer")
-      .setDescription("Crée un recrutement avec un panel « Postuler ».")
-      .addStringOption((o) => o.setName("titre").setDescription("Titre du recrutement.").setRequired(true).setMaxLength(100))
-      .addStringOption((o) =>
-        o
-          .setName("questions")
-          .setDescription("Questions séparées par | (1 à 5).")
-          .setRequired(true)
-          .setMaxLength(1500)
-      )
-      .addChannelOption((o) =>
-        o.setName("salon").setDescription("Salon du panel (défaut : salon actuel).").addChannelTypes(ChannelType.GuildText)
-      )
-  )
-  .addSubcommand((s) => s.setName("liste").setDescription("Liste les recrutements du serveur."))
-  .addSubcommand((s) =>
-    s
-      .setName("fermer")
-      .setDescription("Ferme un recrutement (plus de candidatures).")
-      .addIntegerOption((o) => o.setName("id").setDescription("ID du recrutement.").setRequired(true).setMinValue(1))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("config")
-      .setDescription("Définit le salon staff qui reçoit les candidatures.")
-      .addChannelOption((o) =>
-        o.setName("staff").setDescription("Salon staff.").setRequired(true).addChannelTypes(ChannelType.GuildText)
-      )
-  );
+  .setDescription("Gère les recrutements et candidatures du serveur.");
 
-function staffOnly(interaction: ChatInputCommandInteraction | MessageComponentInteraction): boolean {
+const MENU_ID = "candidature:menu";
+const MODAL_CREER = "candidature:modal:creer";
+const MODAL_FERMER = "candidature:modal:fermer";
+const MODAL_CONFIG = "candidature:modal:config";
+
+function staffOnly(interaction: ChatInputCommandInteraction | MessageComponentInteraction | ModalSubmitInteraction): boolean {
   const member = interaction.member as GuildMember | null;
   return !!member?.permissions.has(PermissionFlagsBits.ManageGuild);
 }
@@ -133,10 +115,115 @@ function buildApplicationPanel(app: Application, rec: Recruitment) {
 }
 
 async function fetchChannel(
-  guild: NonNullable<ChatInputCommandInteraction["guild"]>,
+  guild: Guild,
   channelId: string
 ): Promise<TextBasedChannel | null> {
   return (await guild.channels.fetch(channelId).catch(() => null)) as TextBasedChannel | null;
+}
+
+/** Hub : menu d'actions (réponse éphémère). */
+function hubComponents(): [ContainerBuilder, ActionRowBuilder<StringSelectMenuBuilder>] {
+  const head = panel(
+    [
+      textBlock("## 📋 Candidatures"),
+      textBlock("Gère les recrutements du serveur. Choisis une action dans le menu ci-dessous."),
+    ],
+    GOLD
+  );
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(MENU_ID)
+      .setPlaceholder("Choisis une action…")
+      .addOptions(
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Créer un recrutement")
+          .setValue("creer")
+          .setEmoji("📝")
+          .setDescription("Publie un panel « Postuler » dans un salon."),
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Lister les recrutements")
+          .setValue("liste")
+          .setEmoji("📃")
+          .setDescription("Affiche tous les recrutements du serveur."),
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Fermer un recrutement")
+          .setValue("fermer")
+          .setEmoji("🔒")
+          .setDescription("Ferme un recrutement (plus de candidatures)."),
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Configurer le salon staff")
+          .setValue("config")
+          .setEmoji("⚙️")
+          .setDescription("Définit le salon qui reçoit les candidatures.")
+      )
+  );
+  return [head, row];
+}
+
+function creerModal(): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(MODAL_CREER).setTitle("Créer un recrutement");
+  modal.addComponents(
+    new LabelBuilder().setLabel("Titre").setTextInputComponent(
+      new TextInputBuilder()
+        .setCustomId("titre")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(100)
+        .setPlaceholder("Ex : Modérateurs")
+    ),
+    new LabelBuilder()
+      .setLabel("Questions")
+      .setDescription("1 à 5 questions, séparées par |")
+      .setTextInputComponent(
+        new TextInputBuilder()
+          .setCustomId("questions")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1500)
+          .setPlaceholder("Question 1 | Question 2 | Question 3")
+      ),
+    new LabelBuilder()
+      .setLabel("Salon du panel")
+      .setDescription("Laisse vide pour utiliser le salon actuel.")
+      .setChannelSelectMenuComponent(
+        new ChannelSelectMenuBuilder()
+          .setCustomId("salon")
+          .setChannelTypes(ChannelType.GuildText)
+          .setPlaceholder("Salon du panel…")
+      )
+  );
+  return modal;
+}
+
+function fermerModal(): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(MODAL_FERMER).setTitle("Fermer un recrutement");
+  modal.addComponents(
+    new LabelBuilder().setLabel("ID du recrutement").setTextInputComponent(
+      new TextInputBuilder()
+        .setCustomId("id")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(10)
+        .setPlaceholder("Ex : 3")
+    )
+  );
+  return modal;
+}
+
+function configModal(): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(MODAL_CONFIG).setTitle("Salon staff des candidatures");
+  modal.addComponents(
+    new LabelBuilder()
+      .setLabel("Salon staff")
+      .setDescription("Les candidatures y seront envoyées.")
+      .setChannelSelectMenuComponent(
+        new ChannelSelectMenuBuilder()
+          .setCustomId("staff")
+          .setChannelTypes(ChannelType.GuildText)
+          .setPlaceholder("Choisir le salon staff…")
+      )
+  );
+  return modal;
 }
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -145,68 +232,94 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const sub = interaction.options.getSubcommand();
+  const [head, row] = hubComponents();
+  await interaction.reply({ components: [head, row], flags: FLAGS_V2_EPHEMERAL });
+}
 
-  if (sub === "config") {
-    if (!staffOnly(interaction)) {
-      await interaction.reply({ components: [errPanel("Réservé au staff (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const staff = interaction.options.getChannel("staff", true);
-    setRecruitStaffChannel(guild.id, staff.id);
-    await interaction.reply({ components: [okPanel(`📥 Les candidatures seront envoyées dans <#${staff.id}>.`)], flags: FLAGS_V2_EPHEMERAL });
+/** Logique de l'ancienne sous-commande "liste". */
+async function runListe(interaction: MessageComponentInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.update({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-
-  if (sub === "liste") {
-    if (!staffOnly(interaction)) {
-      await interaction.reply({ components: [errPanel("Réservé au staff (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const recs = listRecruitments(guild.id);
-    if (recs.length === 0) {
-      await interaction.reply({ components: [errPanel("Aucun recrutement pour le moment. Crée-en un avec `/candidature creer`.")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const lines = recs.map((r) => {
-      const n = countApplications(r.id);
-      const state = r.open ? "🟢 Ouvert" : "🔒 Fermé";
-      return `\`#${r.id}\` **${r.title}** — ${state} — <#${r.channel_id}> — ${n} candidature(s)`;
-    });
-    await interaction.reply({
-      components: [panel([textBlock("## 📋 Recrutements"), sepBlock(false), textBlock(lines.join("\n"))], BLUE)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+  if (!staffOnly(interaction)) {
+    await interaction.update({ components: [errPanel("Réservé au staff (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-
-  if (sub === "fermer") {
-    if (!staffOnly(interaction)) {
-      await interaction.reply({ components: [errPanel("Réservé au staff (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const id = interaction.options.getInteger("id", true);
-    const rec = getRecruitment(id);
-    if (!rec || rec.guild_id !== guild.id) {
-      await interaction.reply({ components: [errPanel(`Recrutement #${id} introuvable.`)], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    if (!rec.open) {
-      await interaction.reply({ components: [errPanel(`Le recrutement #${id} est déjà fermé.`),], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    closeRecruitment(id);
-    const closed = { ...rec, open: 0 };
-    if (rec.message_id) {
-      const channel = await fetchChannel(guild, rec.channel_id);
-      const msg = channel?.isTextBased() ? await channel.messages.fetch(rec.message_id).catch(() => null) : null;
-      if (msg) await msg.edit({ components: buildRecruitPanel(closed, countApplications(id)) }).catch(() => {});
-    }
-    await interaction.reply({ components: [okPanel(`🔒 Recrutement **${rec.title}** (#${id}) fermé.`)], flags: FLAGS_V2_EPHEMERAL });
+  const recs = listRecruitments(guild.id);
+  if (recs.length === 0) {
+    await interaction.update({ components: [errPanel("Aucun recrutement pour le moment.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
+  const lines = recs.map((r) => {
+    const n = countApplications(r.id);
+    const state = r.open ? "🟢 Ouvert" : "🔒 Fermé";
+    return `\`#${r.id}\` **${r.title}** — ${state} — <#${r.channel_id}> — ${n} candidature(s)`;
+  });
+  await interaction.update({
+    components: [panel([textBlock("## 📋 Recrutements"), sepBlock(false), textBlock(lines.join("\n"))], BLUE)],
+    flags: FLAGS_V2_EPHEMERAL,
+  });
+}
 
-  // creer
+/** Logique de l'ancienne sous-commande "fermer". */
+async function runFermer(interaction: ModalSubmitInteraction, id: number): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  if (!staffOnly(interaction)) {
+    await interaction.reply({ components: [errPanel("Réservé au staff (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  const rec = getRecruitment(id);
+  if (!rec || rec.guild_id !== guild.id) {
+    await interaction.reply({ components: [errPanel(`Recrutement #${id} introuvable.`)], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  if (!rec.open) {
+    await interaction.reply({ components: [errPanel(`Le recrutement #${id} est déjà fermé.`)], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  closeRecruitment(id);
+  const closed = { ...rec, open: 0 };
+  if (rec.message_id) {
+    const channel = await fetchChannel(guild, rec.channel_id);
+    const msg = channel?.isTextBased() ? await channel.messages.fetch(rec.message_id).catch(() => null) : null;
+    if (msg) await msg.edit({ components: buildRecruitPanel(closed, countApplications(id)) }).catch(() => {});
+  }
+  await interaction.reply({ components: [okPanel(`🔒 Recrutement **${rec.title}** (#${id}) fermé.`)], flags: FLAGS_V2_EPHEMERAL });
+}
+
+/** Logique de l'ancienne sous-commande "config". */
+async function runConfig(interaction: ModalSubmitInteraction, staffChannelId: string): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  if (!staffOnly(interaction)) {
+    await interaction.reply({ components: [errPanel("Réservé au staff (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  setRecruitStaffChannel(guild.id, staffChannelId);
+  await interaction.reply({ components: [okPanel(`📥 Les candidatures seront envoyées dans <#${staffChannelId}>.`)], flags: FLAGS_V2_EPHEMERAL });
+}
+
+/** Logique de l'ancienne sous-commande "creer". */
+async function runCreer(
+  interaction: ModalSubmitInteraction,
+  titre: string,
+  questionsRaw: string,
+  postChannel: TextBasedChannel | null
+): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
   if (!staffOnly(interaction)) {
     await interaction.reply({ components: [errPanel("Réservé au staff (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
     return;
@@ -214,19 +327,17 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const staffChannelId = getRecruitStaffChannel(guild.id);
   if (!staffChannelId) {
     await interaction.reply({
-      components: [errPanel("Configure d'abord le salon staff avec `/candidature config`.")],
+      components: [errPanel("Configure d'abord le salon staff via le menu « Configurer le salon staff ».")],
       flags: FLAGS_V2_EPHEMERAL,
     });
     return;
   }
-  const title = interaction.options.getString("titre", true).trim();
-  const rawQuestions = interaction.options.getString("questions", true);
-  const questions = rawQuestions.split("|").map((q) => q.trim()).filter(Boolean);
+  const title = titre.trim();
+  const questions = questionsRaw.split("|").map((q) => q.trim()).filter(Boolean);
   if (questions.length < 1 || questions.length > 5) {
     await interaction.reply({ components: [errPanel("Donne entre 1 et 5 questions, séparées par `|`.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const postChannel = (interaction.options.getChannel("salon") ?? interaction.channel) as TextBasedChannel | null;
   if (!postChannel?.isSendable()) {
     await interaction.reply({ components: [errPanel("Salon de publication invalide.")], flags: FLAGS_V2_EPHEMERAL });
     return;
@@ -254,6 +365,29 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 }
 
 export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  // Menu du hub.
+  if (interaction.customId === MENU_ID) {
+    if (!interaction.isStringSelectMenu()) return;
+    const action = interaction.values[0];
+    if (action === "liste") {
+      await runListe(interaction);
+      return;
+    }
+    if (action === "creer") {
+      await interaction.showModal(creerModal());
+      return;
+    }
+    if (action === "fermer") {
+      await interaction.showModal(fermerModal());
+      return;
+    }
+    if (action === "config") {
+      await interaction.showModal(configModal());
+      return;
+    }
+    return;
+  }
+
   const [_, action, arg] = interaction.customId.split(":");
   const guild = interaction.guild;
   if (!guild) {
@@ -340,6 +474,39 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     await interaction.reply({ components: [errPanel("Cette action doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
+
+  // Nouveaux modals du hub.
+  if (parts[2] === "creer") {
+    const titre = interaction.fields.getTextInputValue("titre");
+    const questions = interaction.fields.getTextInputValue("questions");
+    const selected = interaction.fields.getSelectedChannels("salon");
+    const postChannel =
+      (selected?.first() as TextBasedChannel | undefined) ??
+      (interaction.channel as TextBasedChannel | null);
+    await runCreer(interaction, titre, questions, postChannel);
+    return;
+  }
+  if (parts[2] === "fermer") {
+    const id = parseInt(interaction.fields.getTextInputValue("id").trim(), 10);
+    if (!Number.isFinite(id) || id < 1) {
+      await interaction.reply({ components: [errPanel("ID invalide.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    await runFermer(interaction, id);
+    return;
+  }
+  if (parts[2] === "config") {
+    const selected = interaction.fields.getSelectedChannels("staff", true);
+    const first = selected.first();
+    if (!first) {
+      await interaction.reply({ components: [errPanel("Sélectionne un salon.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    await runConfig(interaction, first.id);
+    return;
+  }
+
+  // Modal existant : candidature:modal:<recruitmentId> (formulaire de postulation).
   const rec = getRecruitment(Number(parts[2]));
   if (!rec || rec.guild_id !== guild.id || !rec.open) {
     await interaction.reply({ components: [errPanel("Ce recrutement est fermé ou introuvable.")], flags: FLAGS_V2_EPHEMERAL });

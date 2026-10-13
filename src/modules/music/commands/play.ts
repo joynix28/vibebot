@@ -1,24 +1,12 @@
-import { SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
 import { FLAGS_V2, okPanel, errPanel, msgPanel, BLUE } from "../../../core/ui.ts";
-import { ensureQueue, resolveQuery, formatDuration, MAX_QUERY_LENGTH } from "../func/player.ts";
+import { ensureQueue, resolveQuery, formatDuration } from "../func/player.ts";
+import type { HubInteraction } from "./_hub.ts";
+import { asQueueInteraction } from "./_hub.ts";
 
-export const data = new SlashCommandBuilder()
-  .setName("play")
-  .setDescription("Joue un morceau YouTube / SoundCloud ou l'ajoute à la file d'attente.")
-  .addStringOption((o) =>
-    o
-      .setName("requete")
-      .setDescription("Titre à rechercher, ou lien YouTube / SoundCloud.")
-      .setRequired(true)
-      .setMaxLength(MAX_QUERY_LENGTH)
-  );
-
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const query = interaction.options.getString("requete", true);
+export async function runPlay(interaction: HubInteraction, query: string): Promise<void> {
   await interaction.deferReply({ flags: FLAGS_V2 });
 
-  const joined = await ensureQueue(interaction);
+  const joined = await ensureQueue(asQueueInteraction(interaction));
   if ("error" in joined) {
     await interaction.editReply({ components: [errPanel(joined.error)], flags: FLAGS_V2 });
     return;

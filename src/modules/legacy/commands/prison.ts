@@ -1,15 +1,32 @@
-import { SlashCommandBuilder, PermissionFlagsBits, ChannelType } from "discord.js";
+import {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  ChannelType,
+  ModalBuilder,
+  LabelBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ActionRowBuilder,
+  UserSelectMenuBuilder,
+  RoleSelectMenuBuilder,
+  ChannelSelectMenuBuilder,
+} from "discord.js";
 import type {
   ChatInputCommandInteraction,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
   GuildMember,
   Client,
   TextBasedChannel,
   Role,
+  User,
+  ContainerBuilder,
 } from "discord.js";
 import {
   FLAGS_V2,
   FLAGS_V2_EPHEMERAL,
-  BLUE,
   GREEN,
   RED,
   GOLD,
@@ -33,44 +50,23 @@ import { parseDuration } from "../func/dur.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("prison")
-  .setDescription("Envoie un membre en prison (rôles retirés et sauvegardés).")
-  .addSubcommand((s) =>
-    s
-      .setName("mettre")
-      .setDescription("Emprisonne un membre.")
-      .addUserOption((o) => o.setName("membre").setDescription("Le membre à emprisonner.").setRequired(true))
-      .addStringOption((o) =>
-        o.setName("duree").setDescription("Durée : 30m, 2h, 1j… (vide = permanent).").setMaxLength(10)
-      )
-      .addStringOption((o) => o.setName("raison").setDescription("Raison de l'emprisonnement.").setMaxLength(300))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("liberer")
-      .setDescription("Libère un membre (rôles restaurés).")
-      .addUserOption((o) => o.setName("membre").setDescription("Le membre à libérer.").setRequired(true))
-  )
-  .addSubcommand((s) => s.setName("liste").setDescription("Liste les membres actuellement en prison."))
-  .addSubcommand((s) =>
-    s
-      .setName("config")
-      .setDescription("Configure le rôle prison et le salon d'annonce.")
-      .addRoleOption((o) => o.setName("role").setDescription("Le rôle prison.").setRequired(true))
-      .addChannelOption((o) =>
-        o.setName("salon").setDescription("Salon d'annonce (optionnel).").addChannelTypes(ChannelType.GuildText)
-      )
-  );
+  .setDescription("Envoie un membre en prison (rôles retirés et sauvegardés).");
+
+const MENU_ID = "prison:menu";
+const MODAL_METTRE = "prison:modal:mettre";
+const MODAL_LIBERER = "prison:modal:liberer";
+const MODAL_CONFIG = "prison:modal:config";
 
 /** setTimeout ne supporte pas plus de ~24,8 jours. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const jailTimers = new Map<string, NodeJS.Timeout>();
 
-function modOnly(interaction: ChatInputCommandInteraction): boolean {
+function modOnly(interaction: ChatInputCommandInteraction | MessageComponentInteraction | ModalSubmitInteraction): boolean {
   const member = interaction.member as GuildMember | null;
   return !!member?.permissions.has(PermissionFlagsBits.ModerateMembers);
 }
 
-function adminOnly(interaction: ChatInputCommandInteraction): boolean {
+function adminOnly(interaction: ChatInputCommandInteraction | MessageComponentInteraction | ModalSubmitInteraction): boolean {
   const member = interaction.member as GuildMember | null;
   return !!member?.permissions.has(PermissionFlagsBits.ManageGuild);
 }
@@ -171,75 +167,204 @@ export async function restoreJailTimers(client: Client): Promise<void> {
   console.log(`[legacy] prison : ${scheduled} timer(s) restauré(s), ${released} libération(s) immédiate(s)`);
 }
 
+/** Hub : menu d'actions (réponse éphémère). */
+function hubComponents(): [ContainerBuilder, ActionRowBuilder<StringSelectMenuBuilder>] {
+  const head = panel(
+    [
+      textBlock("## 🔒 Prison"),
+      textBlock("Emprisonne un membre (rôles retirés et sauvegardés). Choisis une action dans le menu ci-dessous."),
+    ],
+    GOLD
+  );
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(MENU_ID)
+      .setPlaceholder("Choisis une action…")
+      .addOptions(
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Emprisonner un membre")
+          .setValue("mettre")
+          .setEmoji("🔒")
+          .setDescription("Retire ses rôles et lui assigne le rôle prison."),
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Libérer un membre")
+          .setValue("liberer")
+          .setEmoji("🔓")
+          .setDescription("Restaure ses rôles sauvegardés."),
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Liste des prisonniers")
+          .setValue("liste")
+          .setEmoji("📃")
+          .setDescription("Affiche les membres en prison."),
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Configurer la prison")
+          .setValue("config")
+          .setEmoji("⚙️")
+          .setDescription("Définit le rôle prison et le salon d'annonce.")
+      )
+  );
+  return [head, row];
+}
+
+function mettreModal(): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(MODAL_METTRE).setTitle("Emprisonner un membre");
+  modal.addComponents(
+    new LabelBuilder()
+      .setLabel("Membre")
+      .setUserSelectMenuComponent(
+        new UserSelectMenuBuilder().setCustomId("membre").setPlaceholder("Choisir le membre…")
+      ),
+    new LabelBuilder()
+      .setLabel("Durée")
+      .setDescription("Vide = permanent. Exemples : 30m, 2h, 1j.")
+      .setTextInputComponent(
+        new TextInputBuilder()
+          .setCustomId("duree")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(10)
+          .setPlaceholder("30m, 2h, 1j…")
+      ),
+    new LabelBuilder()
+      .setLabel("Raison")
+      .setTextInputComponent(
+        new TextInputBuilder()
+          .setCustomId("raison")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(300)
+          .setPlaceholder("Raison de l'emprisonnement…")
+      )
+  );
+  return modal;
+}
+
+function libererModal(): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(MODAL_LIBERER).setTitle("Libérer un membre");
+  modal.addComponents(
+    new LabelBuilder()
+      .setLabel("Membre")
+      .setUserSelectMenuComponent(
+        new UserSelectMenuBuilder().setCustomId("membre").setPlaceholder("Choisir le membre…")
+      )
+  );
+  return modal;
+}
+
+function configModal(): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(MODAL_CONFIG).setTitle("Configurer la prison");
+  modal.addComponents(
+    new LabelBuilder()
+      .setLabel("Rôle prison")
+      .setRoleSelectMenuComponent(
+        new RoleSelectMenuBuilder().setCustomId("role").setPlaceholder("Choisir le rôle prison…")
+      ),
+    new LabelBuilder()
+      .setLabel("Salon d'annonce")
+      .setDescription("Optionnel : les mises en prison y sont annoncées.")
+      .setChannelSelectMenuComponent(
+        new ChannelSelectMenuBuilder()
+          .setCustomId("salon")
+          .setChannelTypes(ChannelType.GuildText)
+          .setPlaceholder("Salon d'annonce…")
+      )
+  );
+  return modal;
+}
+
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const sub = interaction.options.getSubcommand();
+  const [head, row] = hubComponents();
+  await interaction.reply({ components: [head, row], flags: FLAGS_V2_EPHEMERAL });
+}
 
-  if (sub === "config") {
-    if (!adminOnly(interaction)) {
-      await interaction.reply({ components: [errPanel("Réservé aux administrateurs (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const role = interaction.options.getRole("role", true);
-    const salon = interaction.options.getChannel("salon");
-    setJailConfig(guild.id, role.id, salon?.id ?? null);
-    await interaction.reply({
-      components: [okPanel(`🔒 Rôle prison : <@&${role.id}>${salon ? `\n📢 Annonces : <#${salon.id}>` : ""}`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+/** Logique de l'ancienne sous-commande "liste". */
+async function runListe(interaction: MessageComponentInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.update({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-
-  if (sub === "liste") {
-    if (!modOnly(interaction)) {
-      await interaction.reply({ components: [errPanel("Réservé à la modération.")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const rows = listJailed(guild.id);
-    if (rows.length === 0) {
-      await interaction.reply({ components: [okPanel("🔓 La prison est vide.")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const lines = rows.map((r) => {
-      const rest = r.ends_at ? ` — reste ${formatRemaining(r.ends_at - Date.now())}` : " — ⏳ permanent";
-      return `🔒 <@${r.user_id}>${rest}\n> *${r.reason ?? "Aucune raison"}* (par <@${r.jailed_by}>)`;
-    });
-    await interaction.reply({
-      components: [panel([textBlock("## 🔒 Prison"), sepBlock(false), textBlock(lines.join("\n\n"))], GOLD)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+  if (!modOnly(interaction)) {
+    await interaction.update({ components: [errPanel("Réservé à la modération.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-
-  if (sub === "liberer") {
-    if (!modOnly(interaction)) {
-      await interaction.reply({ components: [errPanel("Réservé à la modération.")], flags: FLAGS_V2_EPHEMERAL });
-      return;
-    }
-    const user = interaction.options.getUser("membre", true);
-    const ok = await releaseJailed(interaction.client, guild.id, user.id);
-    await interaction.reply({
-      components: [ok ? okPanel(`🔓 <@${user.id}> a été libéré, ses rôles ont été restaurés.`) : errPanel("Ce membre n'est pas en prison.")],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+  const rows = listJailed(guild.id);
+  if (rows.length === 0) {
+    await interaction.update({ components: [okPanel("🔓 La prison est vide.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
+  const lines = rows.map((r) => {
+    const rest = r.ends_at ? ` — reste ${formatRemaining(r.ends_at - Date.now())}` : " — ⏳ permanent";
+    return `🔒 <@${r.user_id}>${rest}\n> *${r.reason ?? "Aucune raison"}* (par <@${r.jailed_by}>)`;
+  });
+  await interaction.update({
+    components: [panel([textBlock("## 🔒 Prison"), sepBlock(false), textBlock(lines.join("\n\n"))], GOLD)],
+    flags: FLAGS_V2_EPHEMERAL,
+  });
+}
 
-  // mettre
+/** Logique de l'ancienne sous-commande "liberer". */
+async function runLiberer(interaction: ModalSubmitInteraction, user: User): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  if (!modOnly(interaction)) {
+    await interaction.reply({ components: [errPanel("Réservé à la modération.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  const ok = await releaseJailed(interaction.client, guild.id, user.id);
+  await interaction.reply({
+    components: [ok ? okPanel(`🔓 <@${user.id}> a été libéré, ses rôles ont été restaurés.`) : errPanel("Ce membre n'est pas en prison.")],
+    flags: FLAGS_V2_EPHEMERAL,
+  });
+}
+
+/** Logique de l'ancienne sous-commande "config". */
+async function runConfig(interaction: ModalSubmitInteraction, roleId: string, salonId: string | null): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  if (!adminOnly(interaction)) {
+    await interaction.reply({ components: [errPanel("Réservé aux administrateurs (Gérer le serveur).")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  setJailConfig(guild.id, roleId, salonId);
+  await interaction.reply({
+    components: [okPanel(`🔒 Rôle prison : <@&${roleId}>${salonId ? `\n📢 Annonces : <#${salonId}>` : ""}`)],
+    flags: FLAGS_V2_EPHEMERAL,
+  });
+}
+
+/** Logique de l'ancienne sous-commande "mettre". */
+async function runMettre(
+  interaction: ModalSubmitInteraction,
+  user: User,
+  rawDur: string | null,
+  reason: string | null
+): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
   if (!modOnly(interaction)) {
     await interaction.reply({ components: [errPanel("Réservé à la modération.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
   const cfg = getJailConfig(guild.id);
   if (!cfg) {
-    await interaction.reply({ components: [errPanel("Configure d'abord la prison avec `/prison config`.")], flags: FLAGS_V2_EPHEMERAL });
+    await interaction.reply({ components: [errPanel("Configure d'abord la prison via le menu « Configurer la prison ».")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const user = interaction.options.getUser("membre", true);
   if (user.bot) {
     await interaction.reply({ components: [errPanel("On n'emprisonne pas les bots.")], flags: FLAGS_V2_EPHEMERAL });
     return;
@@ -261,7 +386,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const me = await guild.members.fetchMe().catch(() => null);
   const jailRole = guild.roles.cache.get(cfg.role_id);
   if (!jailRole) {
-    await interaction.reply({ components: [errPanel("Le rôle prison configuré n'existe plus. Reconfigure avec `/prison config`.")], flags: FLAGS_V2_EPHEMERAL });
+    await interaction.reply({ components: [errPanel("Le rôle prison configuré n'existe plus. Reconfigure via le menu.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
   if (!me || jailRole.position >= me.roles.highest.position) {
@@ -275,7 +400,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   let endsAt: number | null = null;
   let durationLabel = "⏳ permanent";
-  const rawDur = interaction.options.getString("duree");
   if (rawDur) {
     const parsed = parseDuration(rawDur);
     if (!parsed) {
@@ -285,7 +409,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     endsAt = Date.now() + parsed.ms;
     durationLabel = parsed.label;
   }
-  const reason = interaction.options.getString("raison")?.trim() || null;
 
   // Sauvegarde les rôles (hors @everyone, hors rôles managés, hors rôle prison).
   const savedRoles = target.roles.cache
@@ -321,4 +444,71 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     components: [okPanel(`🔒 <@${user.id}> est en prison (${durationLabel}).\n**Raison :** ${reason ?? "*Aucune*"}`)],
     flags: FLAGS_V2_EPHEMERAL,
   });
+}
+
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  if (interaction.customId !== MENU_ID) return;
+  if (!interaction.isStringSelectMenu()) return;
+  const action = interaction.values[0];
+  if (action === "liste") {
+    await runListe(interaction);
+    return;
+  }
+  if (action === "mettre") {
+    await interaction.showModal(mettreModal());
+    return;
+  }
+  if (action === "liberer") {
+    await interaction.showModal(libererModal());
+    return;
+  }
+  if (action === "config") {
+    await interaction.showModal(configModal());
+    return;
+  }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+
+  if (interaction.customId === MODAL_METTRE) {
+    const users = interaction.fields.getSelectedUsers("membre", true);
+    const user = users.first();
+    if (!user) {
+      await interaction.reply({ components: [errPanel("Sélectionne un membre.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    const rawDur = interaction.fields.getTextInputValue("duree").trim() || null;
+    const reason = interaction.fields.getTextInputValue("raison").trim() || null;
+    await runMettre(interaction, user, rawDur, reason);
+    return;
+  }
+
+  if (interaction.customId === MODAL_LIBERER) {
+    const users = interaction.fields.getSelectedUsers("membre", true);
+    const user = users.first();
+    if (!user) {
+      await interaction.reply({ components: [errPanel("Sélectionne un membre.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    await runLiberer(interaction, user);
+    return;
+  }
+
+  if (interaction.customId === MODAL_CONFIG) {
+    const roles = interaction.fields.getSelectedRoles("role", true);
+    const roleId = roles.firstKey();
+    if (!roleId) {
+      await interaction.reply({ components: [errPanel("Sélectionne un rôle.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+    const chans = interaction.fields.getSelectedChannels("salon");
+    const salonId = chans?.firstKey() ?? null;
+    await runConfig(interaction, roleId, salonId);
+    return;
+  }
 }

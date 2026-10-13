@@ -1,14 +1,10 @@
-import { SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import type { HubInteraction } from "./_hub.ts";
+import { asQueueInteraction } from "./_hub.ts";
 import { FLAGS_V2, FLAGS_V2_EPHEMERAL, okPanel, errPanel, msgPanel, BLUE } from "../../../core/ui.ts";
 import { getQueue, canControl, listenerCount, votesNeeded, formatDuration } from "../func/player.ts";
 import { getSettings } from "../func/db.ts";
 
-export const data = new SlashCommandBuilder()
-  .setName("skip")
-  .setDescription("Passe au morceau suivant (vote si tu n'es pas DJ).");
-
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function runSkip(interaction: HubInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
@@ -21,7 +17,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  if (canControl(interaction)) {
+  if (canControl(asQueueInteraction(interaction))) {
     queue.skip();
     await interaction.reply({ components: [okPanel(`⏭️ Morceau passé.` )], flags: FLAGS_V2 });
     return;

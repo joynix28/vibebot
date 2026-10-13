@@ -1,30 +1,14 @@
-import { SlashCommandBuilder, ChannelType, ButtonStyle, MessageFlags } from "discord.js";
-import type { ChatInputCommandInteraction, MessageComponentInteraction } from "discord.js";
+import { SlashCommandBuilder, ChannelType, ButtonStyle, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ActionRowBuilder, ContainerBuilder, TextDisplayBuilder, ModalBuilder, LabelBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
+import type { ChatInputCommandInteraction, MessageComponentInteraction, ModalSubmitInteraction } from "discord.js";
+import { ACCENT, FLAGS_V2_EPHEMERAL } from "../../../../core/ui.ts";
 import { aud, ACT } from "../../func/db.ts";
 import { st, td, panel, panelWith, tx, row, btn, lnk, V2E, type Blk } from "../../func/ui.ts";
-import { canUse } from "../../func/permCheck.ts";
+import { permLvl } from "../../func/db.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("template")
-  .setDescription("Choose from thousands of free server templates")
-  .setDefaultMemberPermissions(8)
-  .addSubcommand((s) => s.setName("create").setDescription("Create a new public template"))
-  .addSubcommand((s) =>
-    s
-      .setName("load")
-      .setDescription("Load one of the public templates")
-      .addStringOption((o) => o.setName("name_or_id").setDescription("The name, id or url of the template that you want to load").setRequired(true))
-      .addStringOption((o) => o.setName("options").setDescription("A list of options").setRequired(false))
-  )
-  .addSubcommand((s) => s.setName("cancel").setDescription("Cancel the currently running loading process on this server"))
-  .addSubcommand((s) => s.setName("status").setDescription("Get the status of the currently running loading process"))
-  .addSubcommand((s) => s.setName("list").setDescription("Get a list of available public templates"))
-  .addSubcommand((s) =>
-    s
-      .setName("info")
-      .setDescription("Get information about a public template")
-      .addStringOption((o) => o.setName("name_or_id").setDescription("The name, id or url of the template that you want to load").setRequired(true))
-  );
+  .setDescription("Choisir parmi des modèles de serveur gratuits")
+  .setDefaultMemberPermissions(8);
 
 const bl = 0x4a9fe0;
 const gr = 0x5bd57b;
@@ -34,6 +18,53 @@ const og = 0xe8a130;
 const TPL = "https://xenon.bot/templates";
 const LIST_URL = "https://templates.xenon.bot/templates";
 const API = "https://discord.com/api/v10";
+
+function hubPanel(): ContainerBuilder {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("template:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      new StringSelectMenuOptionBuilder().setLabel("Charger un modèle").setValue("load").setDescription("Charge un modèle public sur ce serveur").setEmoji("📥"),
+      new StringSelectMenuOptionBuilder().setLabel("Créer un modèle").setValue("create").setDescription("Publier un nouveau modèle").setEmoji("➕"),
+      new StringSelectMenuOptionBuilder().setLabel("Liste des modèles").setValue("list").setDescription("Voir les modèles populaires").setEmoji("📝"),
+      new StringSelectMenuOptionBuilder().setLabel("Infos modèle").setValue("info").setDescription("Détails d'un modèle public").setEmoji("ℹ️"),
+      new StringSelectMenuOptionBuilder().setLabel("Statut").setValue("status").setDescription("État du chargement en cours").setEmoji("⏳"),
+      new StringSelectMenuOptionBuilder().setLabel("Annuler").setValue("cancel").setDescription("Annule le chargement en cours").setEmoji("🚫")
+    );
+  return new ContainerBuilder()
+    .setAccentColor(ACCENT)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# 🧩 Modèles de serveur\nChoisis une action dans le menu ci-dessous.")
+    )
+    .addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
+}
+
+function openModal(
+  interaction: MessageComponentInteraction,
+  customId: string,
+  title: string,
+  fields: { id: string; label: string; required: boolean; placeholder?: string }[]
+): Promise<void> {
+  const modal = new ModalBuilder().setCustomId(customId).setTitle(title);
+  for (const f of fields) {
+    const input = new TextInputBuilder().setCustomId(f.id).setStyle(TextInputStyle.Short).setRequired(f.required).setMaxLength(300);
+    if (f.placeholder) input.setPlaceholder(f.placeholder);
+    modal.addLabelComponents(new LabelBuilder().setLabel(f.label).setTextInputComponent(input));
+  }
+  return interaction.showModal(modal);
+}
+
+// Même logique que canUse (func/permCheck.ts), adaptée aux interactions composants/modals.
+function canUseComponent(interaction: MessageComponentInteraction | ModalSubmitInteraction, destructive: boolean): boolean {
+  const guild = interaction.guild;
+  if (!guild) return false;
+  if (interaction.user.id === guild.ownerId) return true;
+  const lvl = permLvl(guild.id);
+  if (lvl === "owner") return false;
+  if (lvl === "safe" && destructive) return false;
+  const perms = (interaction.member as any)?.permissions;
+  return perms?.has?.("Administrator") ?? false;
+}
 
 function jfetch(url: string): Promise<Response> {
   return fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -118,7 +149,6 @@ async function fetchDiscordTpl(code: string): Promise<any | null> {
   }
 }
 
-// grab the structure from the xenon preview page and convert it to a discord template payload
 async function fetchPreviewTpl(code: string): Promise<any | null> {
   if (!/^[A-Za-z0-9]{5,20}$/.test(code)) return null;
   try {
@@ -274,93 +304,123 @@ async function doLoad(guild: any, userId: string, code: string, enabled: Set<str
   }
 }
 
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const sub = interaction.options.getSubcommand();
-  const guild = interaction.guild;
-  if (!guild) return;
+async function replyUpdate(interaction: MessageComponentInteraction, comps: any[]): Promise<void> {
+  if (interaction.deferred || interaction.replied) await interaction.editReply({ components: comps });
+  else await interaction.update({ components: comps });
+}
 
-  if (sub === "create") {
-    await interaction.reply({
-      components: [td(`Please use [xenon.bot/templates](${TPL}) to add new templates, you can find help on the [wiki](https://wiki.xenon.bot/en/templates#creating-a-template) for how to create new templates.`)],
-      flags: V2E,
+async function doCreate(interaction: MessageComponentInteraction): Promise<void> {
+  await replyUpdate(interaction, [
+    td(`Please use [xenon.bot/templates](${TPL}) to add new templates, you can find help on the [wiki](https://wiki.xenon.bot/en/templates#creating-a-template) for how to create new templates.`),
+  ]);
+}
+
+async function doCancelStatus(interaction: MessageComponentInteraction): Promise<void> {
+  await replyUpdate(interaction, [st("Error", rd, "There is **no loading process running** on this server.")]);
+}
+
+async function doList(interaction: MessageComponentInteraction): Promise<void> {
+  await interaction.deferUpdate();
+  const list = (await fetchList()).sort((a, b) => b.usage_count - a.usage_count).slice(0, 15);
+  if (list.length === 0) {
+    await interaction.editReply({ components: [st("Error", rd, "Could not load templates. Try again later.")] });
+    return;
+  }
+  const blocks: Blk[] = [
+    tx("**Popular Templates**"),
+    tx(`Go to [xenon.bot/templates](${TPL}) to see all templates.`),
+    tx("\u200b"),
+    ...list.map((t) => tx(`**${t.name}** - \`${t.id}\` (${t.usage_count} uses)`)),
+  ];
+  await interaction.editReply({ components: [panel(blocks)] });
+}
+
+async function doInfo(interaction: ModalSubmitInteraction, nameOrId: string): Promise<void> {
+  await interaction.deferReply({ flags: V2E } as any);
+  const meta = await resolve(nameOrId);
+  if (!meta) {
+    await interaction.editReply({
+      components: [st("Error", rd, `Can't find a template with the name, id or url \`${nameOrId}\`.\nGo to [xenon.bot/templates](${TPL}) to get a list of available templates.`)],
     });
     return;
   }
+  const tpl = await fetchAnyTpl(meta.id);
+  const s = tpl?.serialized_source_guild ?? {};
+  const blocks: Blk[] = [
+    tx("**Template Info**"),
+    tx(`**Name:** ${meta.name}`),
+    tx(`**Code:** \`${meta.id}\``),
+    tx(`**Description:** ${meta.description || "none"}`),
+    tx(`**Used:** ${meta.usage_count || tpl?.usage_count || 0} times`),
+    tx(`**Channels:** \`${s.channels?.length ?? 0}\` | **Roles:** \`${s.roles?.length ?? 0}\``),
+    tx(`**Link:** https://discord.new/${meta.id}`),
+  ];
+  const acts = row(
+    btn(`template:load_direct?${meta.id}`, "Load this template", ButtonStyle.Primary),
+    lnk(`https://discord.new/${meta.id}`, "discord.new", "🔗")
+  );
+  await interaction.editReply({ components: [panelWith(blocks, acts)] });
+}
 
-  if (sub === "cancel" || sub === "status") {
-    await interaction.reply({ components: [st("Error", rd, "There is **no loading process running** on this server.")], flags: V2E });
+async function doLoadModal(interaction: ModalSubmitInteraction, nameOrId: string, options: string | null): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  if (!canUseComponent(interaction, true)) {
+    await interaction.reply({ components: [td("You do not have permission to use this command on this server.")], flags: V2E });
+    return;
+  }
+  const enabled = parseOpts(options);
+  await interaction.reply({ components: [st("Creating backup ...", bl, `Loading template \`${nameOrId}\`...`)], flags: V2E });
+
+  const meta = await resolve(nameOrId);
+  if (!meta) {
+    await interaction.editReply({ components: [st("Error", rd, `Can't find a template with the name, id or url \`${nameOrId}\`.`)], flags: V2E });
     return;
   }
 
-  if (sub === "list") {
-    await interaction.deferReply({ flags: V2E });
-    const list = (await fetchList()).sort((a, b) => b.usage_count - a.usage_count).slice(0, 15);
-    if (list.length === 0) {
-      await interaction.editReply({ components: [st("Error", rd, "Could not load templates. Try again later.")], flags: V2E });
-      return;
-    }
-    const blocks: Blk[] = [
-      tx("**Popular Templates**"),
-      tx(`Go to [xenon.bot/templates](${TPL}) to see all templates.`),
-      tx("\u200b"),
-      ...list.map((t) => tx(`**${t.name}** - \`${t.id}\` (${t.usage_count} uses)`)),
-    ];
-    await interaction.editReply({ components: [panel(blocks)], flags: V2E });
-    return;
-  }
+  const r = await doLoad(guild, interaction.user.id, meta.id, enabled);
+  await interaction.editReply({ components: [st(r.ok ? "Success" : "Error", r.ok ? gr : rd, r.msg)], flags: V2E });
+}
 
-  const nameOrId = interaction.options.getString("name_or_id")!;
-
-  if (sub === "info") {
-    await interaction.deferReply({ flags: V2E });
-    const meta = await resolve(nameOrId);
-    if (!meta) {
-      await interaction.editReply({
-        components: [st("Error", rd, `Can't find a template with the name, id or url \`${nameOrId}\`.\nGo to [xenon.bot/templates](${TPL}) to get a list of available templates.`)],
-        flags: V2E,
-      });
-      return;
-    }
-    const tpl = await fetchAnyTpl(meta.id);
-    const s = tpl?.serialized_source_guild ?? {};
-    const blocks: Blk[] = [
-      tx("**Template Info**"),
-      tx(`**Name:** ${meta.name}`),
-      tx(`**Code:** \`${meta.id}\``),
-      tx(`**Description:** ${meta.description || "none"}`),
-      tx(`**Used:** ${meta.usage_count || tpl?.usage_count || 0} times`),
-      tx(`**Channels:** \`${s.channels?.length ?? 0}\` | **Roles:** \`${s.roles?.length ?? 0}\``),
-      tx(`**Link:** https://discord.new/${meta.id}`),
-    ];
-    const acts = row(
-      btn(`template:load_direct?${meta.id}`, "Load this template", ButtonStyle.Primary),
-      lnk(`https://discord.new/${meta.id}`, "discord.new", "🔗")
-    );
-    await interaction.editReply({ components: [panelWith(blocks, acts)], flags: V2E });
-    return;
-  }
-
-  if (sub === "load") {
-    if (!canUse(interaction, true)) {
-      await interaction.reply({ components: [td("You do not have permission to use this command on this server.")], flags: V2E });
-      return;
-    }
-    const enabled = parseOpts(interaction.options.getString("options"));
-    await interaction.reply({ components: [st("Creating backup ...", bl, `Loading template \`${nameOrId}\`...`)], flags: V2E });
-
-    const meta = await resolve(nameOrId);
-    if (!meta) {
-      await interaction.editReply({ components: [st("Error", rd, `Can't find a template with the name, id or url \`${nameOrId}\`.`)], flags: V2E });
-      return;
-    }
-
-    const r = await doLoad(guild, interaction.user.id, meta.id, enabled);
-    await interaction.editReply({ components: [st(r.ok ? "Success" : "Error", r.ok ? gr : rd, r.msg)], flags: V2E });
-  }
+export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.reply({ components: [hubPanel()], flags: FLAGS_V2_EPHEMERAL });
 }
 
 export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
-  const [action, payload = ""] = interaction.customId.split("?");
+  const cid = interaction.customId;
+
+  // Hub menu
+  if (cid === "template:menu" && interaction.isStringSelectMenu()) {
+    const action = interaction.values[0];
+    if (action === "create") {
+      await doCreate(interaction);
+      return;
+    }
+    if (action === "cancel" || action === "status") {
+      await doCancelStatus(interaction);
+      return;
+    }
+    if (action === "list") {
+      await doList(interaction);
+      return;
+    }
+    if (action === "load") {
+      await openModal(interaction, "template:modal:load", "Charger un modèle", [
+        { id: "name_or_id", label: "Nom, ID ou lien du modèle", required: true, placeholder: "mon-modele" },
+        { id: "options", label: "Options (optionnel)", required: false, placeholder: "ex: channels roles" },
+      ]);
+      return;
+    }
+    if (action === "info") {
+      await openModal(interaction, "template:modal:info", "Infos modèle", [
+        { id: "name_or_id", label: "Nom, ID ou lien du modèle", required: true, placeholder: "mon-modele" },
+      ]);
+      return;
+    }
+    return;
+  }
+
+  const [action, payload = ""] = cid.split("?");
   const guild = interaction.guild;
   if (!guild) return;
 
@@ -386,6 +446,21 @@ export async function handleComponent(interaction: MessageComponentInteraction):
 
   if (action === "template:load_cancel") {
     await interaction.update({ components: [st("Info", bl, "Template loading cancelled.")] });
+    return;
+  }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const cid = interaction.customId;
+  if (cid === "template:modal:load") {
+    const nameOrId = interaction.fields.getTextInputValue("name_or_id").trim();
+    const options = interaction.fields.getTextInputValue("options").trim() || null;
+    await doLoadModal(interaction, nameOrId, options);
+    return;
+  }
+  if (cid === "template:modal:info") {
+    const nameOrId = interaction.fields.getTextInputValue("name_or_id").trim();
+    await doInfo(interaction, nameOrId);
     return;
   }
 }

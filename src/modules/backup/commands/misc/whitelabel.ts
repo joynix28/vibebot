@@ -1,48 +1,85 @@
-import { SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import { SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ActionRowBuilder, ContainerBuilder, TextDisplayBuilder, ModalBuilder, LabelBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
+import type { ChatInputCommandInteraction, MessageComponentInteraction, ModalSubmitInteraction } from "discord.js";
+import { ACCENT, FLAGS_V2_EPHEMERAL } from "../../../../core/ui.ts";
 import { g, type Guild } from "../../func/db.ts";
 import { st, V2E } from "../../func/ui.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("whitelabel")
-  .setDescription("Customize the appearance of the bot in this server")
-  .setDefaultMemberPermissions(8)
-  .addSubcommand((s) =>
-    s
-      .setName("setup")
-      .setDescription("Customize the appearance of the bot in your server")
-      .addStringOption((o) => o.setName("display_name").setDescription("The new display name for the bot in your server").setRequired(false))
-      .addAttachmentOption((o) => o.setName("icon").setDescription("The new icon for the bot in your server").setRequired(false))
-  )
-  .addSubcommand((s) => s.setName("disable").setDescription("Reset the appearance of the bot in your server to the default"));
+  .setDescription("Personnaliser l'apparence du bot sur ce serveur")
+  .setDefaultMemberPermissions(8);
 
 const gr = 0x5bd57b;
 
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const sub = interaction.options.getSubcommand();
+function hubPanel(): ContainerBuilder {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("whitelabel:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Configurer")
+        .setValue("setup")
+        .setDescription("Personnalise le nom d'affichage du bot")
+        .setEmoji("🎨"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Désactiver")
+        .setValue("disable")
+        .setDescription("Réinitialise l'apparence par défaut")
+        .setEmoji("🚫")
+    );
+  return new ContainerBuilder()
+    .setAccentColor(ACCENT)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# 🎨 Whitelabel\nChoisis une action dans le menu ci-dessous.")
+    )
+    .addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
+}
+
+async function doDisable(interaction: MessageComponentInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) return;
   const cfg: Guild = g(guild.id);
+  void cfg;
+  await interaction.update({
+    components: [st("Success", gr, "Successfully **disabled whitelabel** for this server.")],
+  });
+}
 
-  if (sub === "setup") {
-    const name = interaction.options.getString("display_name");
-    const icon = interaction.options.getAttachment("icon");
+async function doSetup(interaction: ModalSubmitInteraction, name: string | null): Promise<void> {
+  const parts = [`**Display Name:** ${name ?? "unchanged"}`, "**Icon:** unchanged"];
+  await interaction.reply({
+    components: [st("Success", gr, `Successfully **updated whitelabel** for this server.\n\n${parts.join("\n")}\n\n> Note: Discord doesn't allow changing the bot name/icon per-server. Use the bot's own display name instead.`)],
+    flags: V2E,
+  });
+}
 
-    const parts = [`**Display Name:** ${name ?? "unchanged"}`];
-    if (icon) parts.push(`**Icon:** \`${icon.name}\``);
-    else parts.push("**Icon:** unchanged");
+export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.reply({ components: [hubPanel()], flags: FLAGS_V2_EPHEMERAL });
+}
 
-    await interaction.reply({
-      components: [st("Success", gr, `Successfully **updated whitelabel** for this server.\n\n${parts.join("\n")}\n\n> Note: Discord doesn't allow changing the bot name/icon per-server. Use the bot's own display name instead.`)],
-      flags: V2E,
-    });
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  if (interaction.customId !== "whitelabel:menu" || !interaction.isStringSelectMenu()) return;
+  const action = interaction.values[0];
+  if (action === "disable") {
+    await doDisable(interaction);
     return;
   }
-
-  if (sub === "disable") {
-    await interaction.reply({
-      components: [st("Success", gr, "Successfully **disabled whitelabel** for this server.")],
-      flags: V2E,
-    });
+  if (action === "setup") {
+    const modal = new ModalBuilder().setCustomId("whitelabel:modal:setup").setTitle("Whitelabel");
+    const input = new TextInputBuilder()
+      .setCustomId("display_name")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false)
+      .setMaxLength(32)
+      .setPlaceholder("Nouveau nom d'affichage");
+    modal.addLabelComponents(new LabelBuilder().setLabel("Nom d'affichage").setTextInputComponent(input));
+    await interaction.showModal(modal);
+    return;
   }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  if (interaction.customId !== "whitelabel:modal:setup") return;
+  const name = interaction.fields.getTextInputValue("display_name").trim() || null;
+  await doSetup(interaction, name);
 }

@@ -1,12 +1,20 @@
 import { SlashCommandBuilder, PermissionFlagsBits, Routes } from "discord.js"
-import type { ChatInputCommandInteraction, ModalSubmitInteraction, Guild } from "discord.js"
-import { panel, tb, sep, frog, green, red, flags_ephemeral } from "../../func/ui.ts"
+import type { ChatInputCommandInteraction, ModalSubmitInteraction, MessageComponentInteraction, Guild, StringSelectMenuInteraction } from "discord.js"
+import { ContainerBuilder, TextDisplayBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } from "discord.js"
+import { panel, tb, sep, row, lnk, sel, frog, green, red, flags_ephemeral } from "../../func/ui.ts"
+import { FLAGS_V2_EPHEMERAL } from "../../../../core/ui.ts"
 import { meta } from "../../func/emoji.ts"
 import {
   ensure,
   parseTactics,
   recent,
   tot,
+  gTop,
+  grand,
+  today,
+  servers,
+  rank,
+  topUsers,
   setLogChannel,
   setAction,
   setTactics,
@@ -22,13 +30,8 @@ import { fmt, tmsg } from "../../func/trap.ts"
 
 export const data = new SlashCommandBuilder()
   .setName("frog")
-  .setDescription("Frog configuration")
+  .setDescription("🐸 Panneau de configuration Frog")
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-  .addSubcommand((s) => s.setName("config").setDescription("Set up trap channel, log channel, and action"))
-  .addSubcommand((s) => s.setName("customize").setDescription("Customise the warning, DM, and log messages"))
-  .addSubcommand((s) => s.setName("status").setDescription("Show current Frog configuration for this server"))
-  .addSubcommand((s) => s.setName("history").setDescription("Show the last 10 users caught by Frog"))
-  .addSubcommand((s) => s.setName("score").setDescription("Show a security rating for your current Frog setup"))
 
 const label: Record<FrogAction, string> = { softban: "Kick", ban: "Ban", disabled: "Disabled" }
 const tacticNames: Record<string, string> = {
@@ -41,8 +44,208 @@ const tacticNames: Record<string, string> = {
 }
 const tacticsList = Object.keys(tacticNames)
 
-function summary(guild: Guild) {
-  const cfg = ensure(guild.id)
+type FrogInteraction = ChatInputCommandInteraction | MessageComponentInteraction
+
+const HUB_ACTIONS = [
+  { value: "config", label: "Configuration", emoji: "⚙️", description: "Salon piège, salon de logs, action et tactiques" },
+  { value: "customize", label: "Messages", emoji: "✏️", description: "Personnalise les messages d'avertissement, DM et logs" },
+  { value: "status", label: "Statut", emoji: "📊", description: "Affiche la configuration actuelle du serveur" },
+  { value: "history", label: "Historique", emoji: "📜", description: "Les 10 derniers utilisateurs piégés" },
+  { value: "score", label: "Score sécurité", emoji: "🛡️", description: "Évalue ta configuration Frog" },
+  { value: "vote", label: "Voter", emoji: "🗳️", description: "Vote pour Frog sur top.gg" },
+  { value: "top", label: "Classement grenouilles", emoji: "🐸", description: "Classements des captures Frog" },
+  { value: "support", label: "Support", emoji: "💬", description: "Rejoins le serveur de support Frog" },
+]
+
+function hubMessage(): ContainerBuilder {
+  return new ContainerBuilder()
+    .setAccentColor(frog)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`## ${meta("froge").tag} Frog\nChoisis une action ci-dessous 👇`)
+    )
+    .addActionRowComponents(
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("frog:menu")
+          .setPlaceholder("Choisis une action…")
+          .setMinValues(1)
+          .setMaxValues(1)
+          .addOptions(
+            HUB_ACTIONS.map((a) =>
+              new StringSelectMenuOptionBuilder()
+                .setLabel(a.label)
+                .setValue(a.value)
+                .setDescription(a.description)
+                .setEmoji(a.emoji)
+            )
+          )
+      )
+    )
+}
+
+export async function execute(i: ChatInputCommandInteraction) {
+  await i.reply({ components: [hubMessage()], flags: FLAGS_V2_EPHEMERAL })
+}
+
+export async function handleComponent(i: MessageComponentInteraction) {
+  // Sous-sélecteur des classements (customId préfixé frog: pour le routeur).
+  if (i.customId.startsWith("frog:topselect:")) {
+    const uid = i.customId.split(":")[2]
+    if (uid && uid !== i.user.id) return
+    if (i.isStringSelectMenu()) return sendTop(i, i.values[0] ?? "this_server")
+    return
+  }
+  if (!i.isStringSelectMenu() || i.customId !== "frog:menu") return
+  const guild = i.guild
+  if (!guild) {
+    await i.reply({ components: [panel([tb("Cette action doit être utilisée sur un serveur.")], red)], flags: flags_ephemeral }).catch(() => {})
+    return
+  }
+  const action = i.values[0]
+  if (action === "config") return openConfig(i)
+  if (action === "customize") return openMessages(i)
+  if (action === "status") return showStatus(i, guild)
+  if (action === "history") return showHistory(i, guild)
+  if (action === "score") return score(i, guild)
+  if (action === "vote") return showVote(i)
+  if (action === "top") return sendTop(i, "this_server")
+  if (action === "support") return showSupport(i)
+}
+
+async function showStatus(i: FrogInteraction, guild: Guild) {
+  await i.reply({ components: [panel([summary(guild)], frog)], flags: flags_ephemeral })
+}
+
+async function showHistory(i: FrogInteraction, guild: Guild) {
+  const rows = recent(guild.id, 10)
+  const lines = rows.map((c, k) => `${k + 1}. <@${c.user_id}> — ${action_text[c.action]} — <t:${Math.floor(c.created_at / 1000)}:R>`)
+  await i.reply({ components: [panel([tb(`## ${meta("gotcha").tag} Recent Catches\n` + (lines.length ? lines.join("\n") : "*No catches yet.*"))], frog)], flags: flags_ephemeral })
+}
+
+// ---------------------------------------------------------------------------
+// Vote / Support / Classements — ex-commandes /vote, /frog-support, /frog-top
+// absorbées dans le hub (customIds préfixés frog: pour le routeur).
+// ---------------------------------------------------------------------------
+
+async function showVote(i: FrogInteraction) {
+  const body = panel(
+    [
+      tb(
+        `## ${meta("frogwow").tag} Vote pour Frog\n` +
+          "Voter aide Frog à atteindre plus de serveurs et à piéger plus de spammeurs. Ça prend deux secondes !"
+      ),
+      row(lnk("https://top.gg/bot/1438562278172790925/vote", "Voter sur top.gg", meta("frogwow").raw)),
+    ],
+    frog
+  )
+  await i.reply({ components: [body], flags: flags_ephemeral })
+}
+
+async function showSupport(i: FrogInteraction) {
+  const body = panel(
+    [
+      tb(
+        `## ${meta("froghuh").tag} Serveur de support\n` +
+          "Besoin d'aide pour configurer Frog, un bug à signaler ou une suggestion ? Rejoins le serveur de support."
+      ),
+      row(lnk("https://discord.gg/jz4DXKvu2E", "Rejoindre le serveur de support", meta("froghuh").raw)),
+    ],
+    frog
+  )
+  await i.reply({ components: [body], flags: flags_ephemeral })
+}
+
+const medals = ["🥇", "🥈", "🥉"]
+const fmtN = (n: number) => n.toLocaleString("fr-FR")
+const pluralFr = (n: number, w: string) => `${fmtN(n)} ${w}${n === 1 ? "" : "s"}`
+
+async function topDisplayName(id: string, i: MessageComponentInteraction): Promise<string> {
+  try {
+    const u = i.client.users.cache.get(id) ?? (await i.client.users.fetch(id))
+    return u.username
+  } catch {
+    return id
+  }
+}
+
+async function topServerName(id: string, i: MessageComponentInteraction): Promise<string> {
+  return i.client.guilds.cache.get(id)?.name ?? id
+}
+
+const TOP_OPTIONS = [
+  { label: "Ce serveur", value: "this_server", description: "Top captures sur ce serveur", emoji: "🏠" },
+  { label: "Top serveurs", value: "top_servers", description: "Serveurs avec le plus de captures", emoji: "🏆" },
+  { label: "Top piégés", value: "top_users", description: "Utilisateurs les plus piégés, tous serveurs", emoji: "🪰" },
+  { label: "Vue d'ensemble", value: "global_overview", description: "Statistiques Frog sur tous les serveurs", emoji: "🌍" },
+]
+
+async function buildTop(i: MessageComponentInteraction, category: string): Promise<string> {
+  const guild = i.guild
+  if (category === "top_servers") {
+    const list = servers().slice(0, 10)
+    const lines: string[] = []
+    for (let k = 0; k < list.length; k++) {
+      const name = await topServerName(list[k]!.guild_id, i)
+      const medal = medals[k] ?? `\`${k + 1}.\``
+      lines.push(`${medal} **${name}** — ${pluralFr(list[k]!.n, "capture")}`)
+    }
+    return `## 🏆 Top serveurs\n-# Classés par nombre total de captures\n\n${lines.join("\n")}`
+  }
+  if (category === "top_users") {
+    const list = topUsers(10)
+    const lines: string[] = []
+    for (let k = 0; k < list.length; k++) {
+      const name = await topDisplayName(list[k]!.user_id, i)
+      const medal = medals[k] ?? `\`${k + 1}.\``
+      lines.push(`${medal} **${name}** — ${pluralFr(list[k]!.n, "capture")}`)
+    }
+    return `## 🪰 Top piégés (global)\n-# Utilisateurs les plus souvent piégés sur tous les serveurs\n\n${lines.join("\n")}`
+  }
+  if (category === "global_overview") {
+    const protectedServers = (await i.client.guilds.fetch()).size
+    return (
+      `## 🌍 Vue d'ensemble\n-# Statistiques du bot sur tous les serveurs protégés\n\n` +
+      `**Serveurs protégés** › ${fmtN(protectedServers)}\n` +
+      `**Captures totales** › ${fmtN(grand())}\n` +
+      `**Captures aujourd'hui** › ${fmtN(today())}`
+    )
+  }
+  const guildName = guild?.name ?? "ce serveur"
+  const top = guild ? gTop(guild.id, 10) : []
+  const total = guild ? tot(guild.id) : 0
+  const lines: string[] = []
+  for (let k = 0; k < top.length; k++) {
+    const name = await topDisplayName(top[k]!.user_id, i)
+    const medal = medals[k] ?? `\`${k + 1}.\``
+    lines.push(`${medal} **${name}** — ${pluralFr(top[k]!.n, "capture")}`)
+  }
+  const pos = guild ? rank(guild.id) : 0
+  const serverCount = servers().length
+  return (
+    `## 🏠 Ce serveur\n-# Top captures sur **${guildName}**\n\n` +
+    (lines.join("\n") || "*Aucune capture pour l'instant*") +
+    `\n\n-# Captures totales : ${fmtN(total)} · Classement global : ${pos ? `#${fmtN(pos)} sur ${fmtN(serverCount)}` : "n/a"}`
+  )
+}
+
+async function sendTop(i: MessageComponentInteraction, category: string): Promise<void> {
+  const content = await buildTop(i, category)
+  const body = panel(
+    [
+      tb(content),
+      sep(),
+      row(sel({ customId: `frog:topselect:${i.user.id}`, options: TOP_OPTIONS.map((o) => ({ ...o, default: o.value === category })) })),
+    ],
+    frog
+  )
+  if (i.customId === "frog:menu") {
+    await i.reply({ components: [body], flags: flags_ephemeral })
+  } else {
+    await i.update({ components: [body] })
+  }
+}
+
+function summary(guild: Guild) {  const cfg = ensure(guild.id)
   const caught = tot(guild.id)
   const active = cfg.action !== "disabled" && !!cfg.trap_channel
   return tb(
@@ -62,7 +265,7 @@ function lrow(label: string, desc: string | undefined, comp: any) {
   return row
 }
 
-async function openConfig(i: ChatInputCommandInteraction) {
+async function openConfig(i: FrogInteraction) {
   const guild = i.guild!
   const cfg = ensure(guild.id)
   const sel = (id: string, cur: string | null) => {
@@ -129,7 +332,7 @@ async function openConfig(i: ChatInputCommandInteraction) {
   }
 }
 
-async function openMessages(i: ChatInputCommandInteraction) {
+async function openMessages(i: FrogInteraction) {
   if (!i.guildId) return;
   const cfg = ensure(i.guildId)
   const input = (id: string, value: string | null, ph: string) => ({
@@ -243,6 +446,11 @@ async function handleMessages(i: ModalSubmitInteraction) {
 
 export async function handleModal(i: ModalSubmitInteraction) {
   if (i.customId === "frog:messages:modal") return handleMessages(i)
+  if (i.customId.startsWith("frog:modal:")) {
+    // Réservé : futurs modals du hub (aucun pour l'instant, les actions
+    // config/customize ouvrent directement leurs modals dédiés).
+    return
+  }
   try {
     const guild = i.guild
     if (!guild) return
@@ -296,21 +504,7 @@ export async function handleModal(i: ModalSubmitInteraction) {
   }
 }
 
-export async function execute(i: ChatInputCommandInteraction) {
-  const sub = i.options.getSubcommand()
-  const guild = i.guild!
-  if (sub === "config") return openConfig(i)
-  if (sub === "customize") return openMessages(i)
-  if (sub === "status") return i.reply({ components: [panel([summary(guild)], frog)], flags: flags_ephemeral })
-  if (sub === "history") {
-    const rows = recent(guild.id, 10)
-    const lines = rows.map((c, k) => `${k + 1}. <@${c.user_id}> — ${action_text[c.action]} — <t:${Math.floor(c.created_at / 1000)}:R>`)
-    return i.reply({ components: [panel([tb(`## ${meta("gotcha").tag} Recent Catches\n` + (lines.length ? lines.join("\n") : "*No catches yet.*"))], frog)], flags: flags_ephemeral })
-  }
-  if (sub === "score") return score(i, guild)
-}
-
-async function score(i: ChatInputCommandInteraction, guild: Guild) {
+async function score(i: FrogInteraction, guild: Guild) {
   const cfg = ensure(guild.id)
   const t = parseTactics(cfg)
   const ch = cfg.trap_channel ? guild.channels.cache.get(cfg.trap_channel) : null

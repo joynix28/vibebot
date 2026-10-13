@@ -1,10 +1,8 @@
 import {
-  SlashCommandBuilder,
   StringSelectMenuBuilder,
   ActionRowBuilder,
 } from "discord.js";
 import type {
-  ChatInputCommandInteraction,
   MessageComponentInteraction,
   StringSelectMenuInteraction,
 } from "discord.js";
@@ -17,13 +15,8 @@ import {
 import type { MessageActionRowComponentBuilder } from "discord.js";
 import { ensureQueue, searchTracks, formatDuration } from "../func/player.ts";
 import type { Song } from "../func/player.ts";
-
-export const data = new SlashCommandBuilder()
-  .setName("search")
-  .setDescription("Recherche un morceau et choisis parmi les 5 meilleurs résultats.")
-  .addStringOption((o) =>
-    o.setName("requete").setDescription("Titre à rechercher.").setRequired(true).setMaxLength(200)
-  );
+import type { HubInteraction } from "./_hub.ts";
+import { asQueueInteraction } from "./_hub.ts";
 
 interface PendingSearch {
   songs: Song[];
@@ -42,8 +35,7 @@ setInterval(() => {
   for (const [k, v] of pending) if (v.expires < now) pending.delete(k);
 }, 60_000).unref?.();
 
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const query = interaction.options.getString("requete", true);
+export async function runSearch(interaction: HubInteraction, query: string): Promise<void> {
   await interaction.deferReply({ flags: FLAGS_V2 });
 
   const results = await searchTracks(query, interaction.user.id);
@@ -56,7 +48,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   pending.set(token, { songs: results, userId: interaction.user.id, expires: Date.now() + 120_000 });
 
   const menu = new StringSelectMenuBuilder()
-    .setCustomId(`search:pick:${token}`)
+    .setCustomId(`musique:searchpick:${token}`)
     .setPlaceholder("Choisis un morceau…")
     .setMinValues(1)
     .setMaxValues(1)
@@ -82,13 +74,13 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   });
 }
 
-export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+export async function handleSearchPick(interaction: MessageComponentInteraction): Promise<void> {
   if (!interaction.isStringSelectMenu()) return;
   const menu = interaction as StringSelectMenuInteraction;
   const token = menu.customId.split(":")[2];
   const entry = token ? pending.get(token) : undefined;
   if (!token || !entry) {
-    await menu.reply({ components: [errPanel("Cette recherche a expiré. Relance `/search`.")], flags: FLAGS_V2 });
+    await menu.reply({ components: [errPanel("Cette recherche a expiré. Relance une recherche depuis /musique.")], flags: FLAGS_V2 });
     return;
   }
   const idx = Number(menu.values[0] ?? "");
@@ -100,7 +92,7 @@ export async function handleComponent(interaction: MessageComponentInteraction):
   pending.delete(token);
 
   await menu.deferUpdate();
-  const joined = await ensureQueue(menu);
+  const joined = await ensureQueue(asQueueInteraction(menu));
   if ("error" in joined) {
     await menu.followUp({ components: [errPanel(joined.error)], flags: FLAGS_V2 });
     return;

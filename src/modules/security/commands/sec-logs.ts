@@ -1,64 +1,159 @@
-import { ChannelType, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import {
+  ActionRowBuilder,
+  ChannelType,
+  ModalBuilder,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  Guild,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+} from "discord.js";
 import { panel, textBlock, msgPanel, FLAGS_V2_EPHEMERAL } from "../func/ui.ts";
 import { ensureGuild, saveGuild } from "../func/db.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("sec-logs")
-  .setDescription("Creates a log channel")
-  .addSubcommand((s) =>
-    s
-      .setName("security")
-      .setDescription("Log channel for security actions")
-      .addChannelOption((o) => o.setName("channel").setDescription("Select a channel to set or empty to create a new one").setRequired(false).addChannelTypes(ChannelType.GuildText))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("mod")
-      .setDescription("Log channel for moderation commands")
-      .addChannelOption((o) => o.setName("channel").setDescription("Select a channel to set or empty to create a new one").setRequired(false).addChannelTypes(ChannelType.GuildText))
-  );
+  .setDescription("Configurer les salons de logs de sécurité.");
 
+const CMD = "sec-logs";
 const BLUE = 0x297fb9;
+
+const HUB_OPTIONS = [
+  { label: "Logs de sécurité", value: "security", emoji: "🛡️", description: "Salon des actions de sécurité" },
+  { label: "Logs de modération", value: "mod", emoji: "🔨", description: "Salon des commandes de modération" },
+];
+
+function menuRow() {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${CMD}:menu`)
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      HUB_OPTIONS.map((o) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(o.label)
+          .setValue(o.value)
+          .setDescription(o.description)
+          .setEmoji(o.emoji)
+      )
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function hubPayload(guild: Guild) {
+  const body = panel(
+    [textBlock(`# 🧾 Logs de sécurité\nChoisis quel salon de logs configurer sur **${guild.name}**.`)],
+    BLUE
+  );
+  return { components: [body, menuRow()], flags: FLAGS_V2_EPHEMERAL };
+}
+
+function channelModal(kind: "security" | "mod") {
+  const modal = new ModalBuilder()
+    .setCustomId(`${CMD}:modal:${kind}`)
+    .setTitle(kind === "mod" ? "Logs de modération" : "Logs de sécurité");
+  modal.addComponents(
+    new ActionRowBuilder<TextInputBuilder>().addComponents(
+      new TextInputBuilder()
+        .setCustomId("channel")
+        .setLabel("Salon (mention ou ID, vide = créer)")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(40)
+        .setPlaceholder("#logs ou 123456789 (vide pour créer)")
+    )
+  );
+  return modal;
+}
+
+/** Extrait un ID de salon depuis une mention <#id> ou un ID brut. */
+function parseChannelId(raw: string): string | null {
+  const m = raw.trim().match(/^(?:<#(\d+)>|(\d{15,20}))$/);
+  return m?.[1] ?? m?.[2] ?? null;
+}
+
+function canManage(guild: Guild, interaction: ChatInputCommandInteraction | MessageComponentInteraction | ModalSubmitInteraction): boolean {
+  if (guild.ownerId === interaction.user.id) return true;
+  const perms = (interaction.member as any)?.permissions;
+  return perms?.has(PermissionFlagsBits.ManageGuild) ?? false;
+}
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ components: [msgPanel("This command can only be used in a server.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+    await interaction.reply({ components: [msgPanel("Cette commande ne peut être utilisée que sur un serveur.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-
-  const isOwner = guild.ownerId === interaction.user.id;
-  const perms = (interaction.member as any)?.permissions;
-  await interaction.deferReply({ flags: FLAGS_V2_EPHEMERAL });
-  if (!isOwner && !perms?.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply({ components: [msgPanel(":red_circle: | You don't have permission to use this command.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+  if (!canManage(guild, interaction)) {
+    await interaction.reply({ components: [msgPanel("❌ Vous n'avez pas la permission d'utiliser cette commande.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
+  await interaction.reply({ ...hubPayload(guild), flags: FLAGS_V2_EPHEMERAL });
+}
 
-  const sub = interaction.options.getSubcommand();
-  const selected = interaction.options.getChannel("channel");
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const parts = interaction.customId.split(":");
+  if (parts[0] !== CMD) return;
+  if (!canManage(guild, interaction)) {
+    await interaction.reply({ components: [msgPanel("❌ Vous n'avez pas la permission d'utiliser cette commande.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  if (parts[1] === "menu" && interaction.isStringSelectMenu()) {
+    const kind = interaction.values[0];
+    if (kind === "security" || kind === "mod") {
+      await interaction.showModal(channelModal(kind));
+    }
+  }
+}
 
-  let ch = selected;
-  if (!ch) {
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const parts = interaction.customId.split(":");
+  if (parts[0] !== CMD || parts[1] !== "modal") return;
+  if (!canManage(guild, interaction)) {
+    await interaction.reply({ components: [msgPanel("❌ Vous n'avez pas la permission d'utiliser cette commande.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  const kind = parts[2] as "security" | "mod";
+  if (kind !== "security" && kind !== "mod") return;
+
+  const raw = interaction.fields.getTextInputValue("channel").trim();
+  let ch: any = null;
+  if (raw) {
+    const id = parseChannelId(raw);
+    ch = id ? guild.channels.cache.get(id) ?? null : null;
+    if (!ch || !ch.isTextBased()) {
+      await interaction.reply({ components: [msgPanel("❌ Salon invalide : mentionne un salon textuel ou colle son ID.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+  } else {
     ch = await guild.channels
-      .create({ name: sub === "mod" ? "mod-logs" : "security-logs", type: ChannelType.GuildText, reason: "Security - log setup" })
+      .create({ name: kind === "mod" ? "mod-logs" : "security-logs", type: ChannelType.GuildText, reason: "Security - log setup" })
       .catch(() => null);
   }
   if (!ch) {
-    await interaction.editReply({ components: [msgPanel(":red_circle: | I couldn't create the log channel.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+    await interaction.reply({ components: [msgPanel("❌ Je n'ai pas pu créer le salon de logs.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
 
   const cfg = ensureGuild(guild.id);
-  if (sub === "mod") cfg.mod_log = ch.id;
+  if (kind === "mod") cfg.mod_log = ch.id;
   else cfg.security_log = ch.id;
   saveGuild(cfg);
 
   const msg =
-    sub === "mod"
-      ? "Mod logs channel has been created successfully.\n`Note: Mod logs can only log security's moderation commands usages`"
-      : "Security logs channel has been created successfully.";
+    kind === "mod"
+      ? "Salon des logs de modération configuré avec succès.\n`Note : les logs de modération ne couvrent que les commandes de modération du module sécurité.`"
+      : "Salon des logs de sécurité configuré avec succès.";
 
-  await interaction.editReply({ components: [panel([textBlock(msg)], BLUE)], flags: FLAGS_V2_EPHEMERAL });
+  await interaction.reply({ components: [panel([textBlock(msg)], BLUE)], flags: FLAGS_V2_EPHEMERAL });
 }

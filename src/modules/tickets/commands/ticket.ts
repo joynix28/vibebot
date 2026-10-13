@@ -1,4 +1,5 @@
 import {
+  ActionRowBuilder,
   ButtonStyle,
   ChannelType,
   FileBuilder,
@@ -6,8 +7,11 @@ import {
   ModalBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   TextInputBuilder,
   TextInputStyle,
+  UserSelectMenuBuilder,
 } from "discord.js";
 import type {
   ChatInputCommandInteraction,
@@ -16,6 +20,7 @@ import type {
   MessageComponentInteraction,
   ModalSubmitInteraction,
   TextChannel,
+  User,
 } from "discord.js";
 import {
   FLAGS_V2,
@@ -23,7 +28,6 @@ import {
   BLUE,
   GREEN,
   GOLD,
-  RED,
   actionRow,
   button,
   errPanel,
@@ -67,62 +71,41 @@ import {
 
 export const data = new SlashCommandBuilder()
   .setName("ticket")
-  .setDescription("Gère les tickets du serveur.")
-  .addSubcommand((s) =>
-    s
-      .setName("new")
-      .setDescription("Ouvre un nouveau ticket.")
-      .addStringOption((o) => o.setName("sujet").setDescription("Le sujet de ton ticket.").setMaxLength(LIMITS.topic))
-  )
-  .addSubcommand((s) => s.setName("close").setDescription("Ferme le ticket actuel."))
-  .addSubcommand((s) => s.setName("claim").setDescription("Prend en charge le ticket actuel."))
-  .addSubcommand((s) => s.setName("release").setDescription("Libère le ticket actuel (retire la prise en charge)."))
-  .addSubcommand((s) =>
-    s
-      .setName("add")
-      .setDescription("Ajoute un membre au ticket actuel.")
-      .addUserOption((o) => o.setName("membre").setDescription("Le membre à ajouter.").setRequired(true))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("remove")
-      .setDescription("Retire un membre du ticket actuel.")
-      .addUserOption((o) => o.setName("membre").setDescription("Le membre à retirer.").setRequired(true))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("rename")
-      .setDescription("Renomme le salon du ticket actuel.")
-      .addStringOption((o) => o.setName("nom").setDescription("Nouveau nom du salon.").setRequired(true).setMaxLength(LIMITS.rename))
-  )
-  .addSubcommand((s) => s.setName("topic").setDescription("Modifie le sujet du ticket actuel (formulaire)."))
-  .addSubcommand((s) =>
-    s
-      .setName("priority")
-      .setDescription("Définit la priorité du ticket actuel.")
-      .addStringOption((o) =>
-        o
-          .setName("niveau")
-          .setDescription("Niveau de priorité.")
-          .setRequired(true)
-          .addChoices(
-            { name: "🔴 Haute", value: "haute" },
-            { name: "🟡 Normale", value: "normale" },
-            { name: "🟢 Basse", value: "basse" }
-          )
-      )
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("transfer")
-      .setDescription("Transfère le ticket à un nouveau créateur.")
-      .addUserOption((o) => o.setName("membre").setDescription("Le nouveau créateur du ticket.").setRequired(true))
-  )
-  .addSubcommand((s) => s.setName("transcript").setDescription("Génère le transcript du ticket actuel."))
-  .addSubcommand((s) => s.setName("stats").setDescription("Affiche les statistiques des tickets."));
+  .setDescription("Gère les tickets du serveur : ouvrir, fermer, claim…");
+
+/** Actions proposées par le hub (une option par ancienne sous-commande). */
+const ACTIONS = [
+  { value: "new", label: "Ouvrir un ticket", emoji: "🎫", desc: "Crée un nouveau ticket." },
+  { value: "close", label: "Fermer le ticket", emoji: "🔒", desc: "Ferme le ticket actuel." },
+  { value: "claim", label: "Prendre en charge", emoji: "🙋", desc: "Prends en charge le ticket. (staff)" },
+  { value: "release", label: "Libérer le ticket", emoji: "🔓", desc: "Retire la prise en charge." },
+  { value: "add", label: "Ajouter un membre", emoji: "➕", desc: "Ajoute quelqu'un au ticket." },
+  { value: "remove", label: "Retirer un membre", emoji: "➖", desc: "Retire quelqu'un du ticket." },
+  { value: "rename", label: "Renommer", emoji: "✏️", desc: "Renomme le salon du ticket." },
+  { value: "topic", label: "Sujet", emoji: "📝", desc: "Modifie le sujet (formulaire)." },
+  { value: "priority", label: "Priorité", emoji: "⚡", desc: "Définit la priorité. (staff)" },
+  { value: "transfer", label: "Transférer", emoji: "🔄", desc: "Change le créateur. (staff)" },
+  { value: "transcript", label: "Transcript", emoji: "📄", desc: "Génère le transcript." },
+  { value: "stats", label: "Statistiques", emoji: "📊", desc: "Stats des tickets. (staff)" },
+] as const;
 
 /** Tickets déjà archivés (évite les doubles transcripts / suppressions). */
 const archived = new Set<number>();
+
+/** Panneau du hub : titre + menu d'actions. */
+function hubPanel(): import("discord.js").ContainerBuilder {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("ticket:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      ACTIONS.map((a) =>
+        new StringSelectMenuOptionBuilder().setLabel(a.label).setValue(a.value).setDescription(a.desc).setEmoji(a.emoji)
+      )
+    );
+  const c = panel([textBlock("# 🎫 Tickets\n> Choisis une action ci-dessous.")], BLUE);
+  c.addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+  return c;
+}
 
 async function deny(interaction: ChatInputCommandInteraction | MessageComponentInteraction, msg: string): Promise<void> {
   const payload = { components: [errPanel(msg)], flags: FLAGS_V2_EPHEMERAL };
@@ -134,11 +117,11 @@ async function deny(interaction: ChatInputCommandInteraction | MessageComponentI
   }
 }
 
-/** Contexte ticket : salon + ticket ouvert + membre. Null si invalide (réponse déjà envoyée). */
+/** Contexte ticket : salon + ticket ouvert. Null si invalide (réponse déjà envoyée). */
 async function ticketContext(
-  interaction: ChatInputCommandInteraction,
+  interaction: ChatInputCommandInteraction | MessageComponentInteraction,
   guild: Guild,
-  member: GuildMember
+  _member: GuildMember
 ): Promise<{ ticket: Ticket; channel: TextChannel } | null> {
   const channel = interaction.channel;
   if (!channel || channel.type !== ChannelType.GuildText) {
@@ -161,58 +144,17 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   }
   const member = interaction.member as GuildMember | null;
   if (!member || interaction.user.bot) return;
-  const sub = interaction.options.getSubcommand();
-
-  switch (sub) {
-    case "new":
-      await runNew(interaction, guild, member);
-      break;
-    case "close":
-      await runClose(interaction, guild, member);
-      break;
-    case "claim":
-      await runClaim(interaction, guild, member);
-      break;
-    case "release":
-      await runRelease(interaction, guild, member);
-      break;
-    case "add":
-      await runAdd(interaction, guild, member);
-      break;
-    case "remove":
-      await runRemove(interaction, guild, member);
-      break;
-    case "rename":
-      await runRename(interaction, guild, member);
-      break;
-    case "topic":
-      await runTopicModal(interaction, guild, member);
-      break;
-    case "priority":
-      await runPriority(interaction, guild, member);
-      break;
-    case "transfer":
-      await runTransfer(interaction, guild, member);
-      break;
-    case "transcript":
-      await runTranscript(interaction, guild, member);
-      break;
-    case "stats":
-      await runStats(interaction, guild, member);
-      break;
-    default:
-      await interaction.reply({ components: [errPanel("Sous-commande inconnue.")], flags: FLAGS_V2_EPHEMERAL });
-  }
+  await interaction.reply({ components: [hubPanel()], flags: FLAGS_V2_EPHEMERAL });
 }
 
 // ---------------------------------------------------------------------------
-// Sous-commandes
+// Actions du hub
 // ---------------------------------------------------------------------------
 
-async function runNew(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+async function actionNew(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const panels = listPanels(guild.id);
   if (panels.length === 0) {
-    await deny(interaction, "Aucun panneau de tickets sur ce serveur. Demande à un admin d'en créer un avec `/ticket-panel creer`.");
+    await deny(interaction, "Aucun panneau de tickets sur ce serveur. Demande à un admin d'en créer un avec `/ticket-panel`.");
     return;
   }
   const existing = getOpenTicketByUser(guild.id, member.id);
@@ -220,13 +162,12 @@ async function runNew(interaction: ChatInputCommandInteraction, guild: Guild, me
     await deny(interaction, `Tu as déjà un ticket ouvert : <#${existing.channel_id}>`);
     return;
   }
-  const topic = (interaction.options.getString("sujet")?.trim().slice(0, LIMITS.topic)) || "";
   const panelRow = panels[panels.length - 1];
   if (!panelRow) {
     await deny(interaction, "Aucun panneau de tickets sur ce serveur.");
     return;
   }
-  const created = await createTicketChannel(guild, panelRow, member, topic);
+  const created = await createTicketChannel(guild, panelRow, member, "");
   if (!created) {
     await deny(interaction, "Impossible de créer le salon ticket (permissions du bot ?).");
     return;
@@ -234,10 +175,10 @@ async function runNew(interaction: ChatInputCommandInteraction, guild: Guild, me
   await interaction.reply({
     components: [okPanel(`✅ Ton ticket a été créé : <#${created.channel.id}>`)],
     flags: FLAGS_V2_EPHEMERAL,
-  });
+  }).catch(() => {});
 }
 
-async function runClose(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+async function actionClose(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!canManageTicket(member, ctx.ticket, guild.id)) {
@@ -247,35 +188,7 @@ async function runClose(interaction: ChatInputCommandInteraction, guild: Guild, 
   await askCloseConfirmation(interaction, ctx.ticket);
 }
 
-/** Demande de confirmation de fermeture (boutons), en éphémère. */
-async function askCloseConfirmation(
-  interaction: ChatInputCommandInteraction | MessageComponentInteraction,
-  ticket: Ticket
-): Promise<void> {
-  const payload = {
-    components: [
-      panel(
-        [
-          textBlock(`# 🔒 Fermer le ticket #${ticket.id} ?\n> Le salon sera verrouillé, un feedback te sera demandé, puis le salon sera supprimé.`),
-        ],
-        GOLD
-      ),
-      actionRow(
-        button(`ticket:closeconfirm:${ticket.id}`, "Confirmer", ButtonStyle.Danger, "🔒"),
-        button(`ticket:closecancel:${ticket.id}`, "Annuler", ButtonStyle.Secondary)
-      ),
-    ],
-    flags: FLAGS_V2_EPHEMERAL,
-  };
-  if (interaction.isMessageComponent()) {
-    if (interaction.deferred || interaction.replied) await interaction.followUp(payload).catch(() => {});
-    else await interaction.reply(payload).catch(() => {});
-  } else {
-    await interaction.reply(payload).catch(() => {});
-  }
-}
-
-async function runClaim(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+async function actionClaim(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!isStaff(member, guild.id)) {
@@ -294,10 +207,10 @@ async function runClaim(interaction: ChatInputCommandInteraction, guild: Guild, 
   await ctx.channel
     .send({ components: [panel([textBlock(`🙋 <@${member.id}> a pris ce ticket en charge.`)], BLUE)], flags: FLAGS_V2 })
     .catch(() => {});
-  await interaction.reply({ components: [okPanel(`✅ Tu as pris en charge le ticket **#${ctx.ticket.id}**.`)], flags: FLAGS_V2_EPHEMERAL });
+  await interaction.reply({ components: [okPanel(`✅ Tu as pris en charge le ticket **#${ctx.ticket.id}**.`)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
 }
 
-async function runRelease(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+async function actionRelease(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!ctx.ticket.claimed_by) {
@@ -314,66 +227,66 @@ async function runRelease(interaction: ChatInputCommandInteraction, guild: Guild
   await ctx.channel
     .send({ components: [panel([textBlock(`🔓 <@${member.id}> a libéré ce ticket.`)], BLUE)], flags: FLAGS_V2 })
     .catch(() => {});
-  await interaction.reply({ components: [okPanel(`✅ Ticket **#${ctx.ticket.id}** libéré.`)], flags: FLAGS_V2_EPHEMERAL });
+  await interaction.reply({ components: [okPanel(`✅ Ticket **#${ctx.ticket.id}** libéré.`)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
 }
 
-async function runAdd(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+/** Ouvre le formulaire d'ajout de membre (sélecteur d'utilisateur). */
+async function openAddModal(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!canManageTicket(member, ctx.ticket, guild.id)) {
     await deny(interaction, "Tu ne peux gérer que tes propres tickets.");
     return;
   }
-  const user = interaction.options.getUser("membre", true);
-  if (user.bot) {
-    await deny(interaction, "Impossible d'ajouter un bot.");
-    return;
-  }
-  await ctx.channel.permissionOverwrites
-    .edit(user.id, {
-      ViewChannel: true,
-      SendMessages: true,
-      ReadMessageHistory: true,
-      AttachFiles: true,
-    })
-    .catch(() => null);
-  await interaction.reply({ components: [okPanel(`✅ <@${user.id}> a été ajouté au ticket.`)], flags: FLAGS_V2_EPHEMERAL });
+  const modal = new ModalBuilder().setCustomId(`ticket:modal:add:${ctx.ticket.id}`).setTitle(`Ajouter un membre — ticket #${ctx.ticket.id}`);
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel("Membre à ajouter")
+      .setDescription("Choisis le membre à ajouter au ticket.")
+      .setUserSelectMenuComponent(new UserSelectMenuBuilder().setCustomId("membre").setMaxValues(1))
+  );
+  await interaction.showModal(modal).catch(() => {});
 }
 
-async function runRemove(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+/** Ouvre le formulaire de retrait de membre (sélecteur d'utilisateur). */
+async function openRemoveModal(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!canManageTicket(member, ctx.ticket, guild.id)) {
     await deny(interaction, "Tu ne peux gérer que tes propres tickets.");
     return;
   }
-  const user = interaction.options.getUser("membre", true);
-  if (user.id === ctx.ticket.creator_id) {
-    await deny(interaction, "Impossible de retirer le créateur du ticket (utilise `/ticket transfer`).");
-    return;
-  }
-  const target = await guild.members.fetch(user.id).catch(() => null);
-  if (target && isStaff(target, guild.id)) {
-    await deny(interaction, "Impossible de retirer un membre de l'équipe support.");
-    return;
-  }
-  await ctx.channel.permissionOverwrites.delete(user.id).catch(() => null);
-  await interaction.reply({ components: [okPanel(`✅ <@${user.id}> a été retiré du ticket.`)], flags: FLAGS_V2_EPHEMERAL });
+  const modal = new ModalBuilder().setCustomId(`ticket:modal:remove:${ctx.ticket.id}`).setTitle(`Retirer un membre — ticket #${ctx.ticket.id}`);
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel("Membre à retirer")
+      .setDescription("Choisis le membre à retirer du ticket.")
+      .setUserSelectMenuComponent(new UserSelectMenuBuilder().setCustomId("membre").setMaxValues(1))
+  );
+  await interaction.showModal(modal).catch(() => {});
 }
 
-async function runRename(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+/** Ouvre le formulaire de renommage (champ texte). */
+async function openRenameModal(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!canManageTicket(member, ctx.ticket, guild.id)) {
     await deny(interaction, "Tu ne peux gérer que tes propres tickets.");
     return;
   }
-  const name = sanitizeChannelName(interaction.options.getString("nom", true));
-  await ctx.channel.setName(name).catch(() => null);
-  await interaction.reply({ components: [okPanel(`✅ Salon renommé en **${name}**.`)], flags: FLAGS_V2_EPHEMERAL });
+  const modal = new ModalBuilder().setCustomId(`ticket:modal:rename:${ctx.ticket.id}`).setTitle(`Renommer — ticket #${ctx.ticket.id}`);
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel("Nouveau nom du salon")
+      .setTextInputComponent(
+        new TextInputBuilder().setCustomId("nom").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(LIMITS.rename)
+      )
+  );
+  await interaction.showModal(modal).catch(() => {});
 }
 
-async function runTopicModal(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+/** Ouvre le formulaire de sujet (champ texte, réutilise le flux existant). */
+async function openTopicModal(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!canManageTicket(member, ctx.ticket, guild.id)) {
@@ -396,59 +309,51 @@ async function runTopicModal(interaction: ChatInputCommandInteraction, guild: Gu
   await interaction.showModal(modal).catch(() => {});
 }
 
-async function runPriority(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+/** Ouvre le formulaire de priorité (menu déroulant). */
+async function openPriorityModal(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!isStaff(member, guild.id)) {
     await deny(interaction, "Réservé à l'équipe support.");
     return;
   }
-  const level = interaction.options.getString("niveau", true) as Ticket["priority"];
-  if (!["haute", "normale", "basse"].includes(level)) {
-    await deny(interaction, "Niveau de priorité invalide.");
-    return;
-  }
-  setTicketPriority(ctx.ticket.id, level);
-  await ctx.channel
-    .send({ components: [panel([textBlock(`⚡ Priorité du ticket définie sur **${priorityLabel(level)}** par <@${member.id}>.`)], GOLD)], flags: FLAGS_V2 })
-    .catch(() => {});
-  await interaction.reply({ components: [okPanel(`✅ Priorité : **${priorityLabel(level)}**.`)], flags: FLAGS_V2_EPHEMERAL });
+  const modal = new ModalBuilder().setCustomId(`ticket:modal:priority:${ctx.ticket.id}`).setTitle(`Priorité — ticket #${ctx.ticket.id}`);
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel("Niveau de priorité")
+      .setStringSelectMenuComponent(
+        new StringSelectMenuBuilder()
+          .setCustomId("niveau")
+          .setPlaceholder("Choisis une priorité…")
+          .addOptions(
+            new StringSelectMenuOptionBuilder().setLabel("Haute").setValue("haute").setEmoji("🔴"),
+            new StringSelectMenuOptionBuilder().setLabel("Normale").setValue("normale").setEmoji("🟡"),
+            new StringSelectMenuOptionBuilder().setLabel("Basse").setValue("basse").setEmoji("🟢")
+          )
+      )
+  );
+  await interaction.showModal(modal).catch(() => {});
 }
 
-async function runTransfer(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+/** Ouvre le formulaire de transfert (sélecteur d'utilisateur). */
+async function openTransferModal(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!isStaff(member, guild.id)) {
     await deny(interaction, "Réservé à l'équipe support.");
     return;
   }
-  const user = interaction.options.getUser("membre", true);
-  if (user.bot) {
-    await deny(interaction, "Impossible de transférer à un bot.");
-    return;
-  }
-  if (user.id === ctx.ticket.creator_id) {
-    await deny(interaction, "Cette personne est déjà la créatrice du ticket.");
-    return;
-  }
-  const target = await guild.members.fetch(user.id).catch(() => null);
-  if (!target) {
-    await deny(interaction, "Ce membre n'est pas sur le serveur.");
-    return;
-  }
-  // Retire les droits de l'ancien créateur, donne ceux du nouveau.
-  await ctx.channel.permissionOverwrites.delete(ctx.ticket.creator_id).catch(() => null);
-  await ctx.channel.permissionOverwrites
-    .edit(user.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true })
-    .catch(() => null);
-  dbTransferTicket(ctx.ticket.id, user.id);
-  await ctx.channel
-    .send({ components: [panel([textBlock(`🔄 Ticket transféré à <@${user.id}> par <@${member.id}>.`)], BLUE)], flags: FLAGS_V2 })
-    .catch(() => {});
-  await interaction.reply({ components: [okPanel(`✅ Ticket transféré à <@${user.id}>.`)], flags: FLAGS_V2_EPHEMERAL });
+  const modal = new ModalBuilder().setCustomId(`ticket:modal:transfer:${ctx.ticket.id}`).setTitle(`Transférer — ticket #${ctx.ticket.id}`);
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel("Nouveau créateur")
+      .setDescription("Le ticket sera transféré à ce membre.")
+      .setUserSelectMenuComponent(new UserSelectMenuBuilder().setCustomId("membre").setMaxValues(1))
+  );
+  await interaction.showModal(modal).catch(() => {});
 }
 
-async function runTranscript(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+async function actionTranscript(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   const ctx = await ticketContext(interaction, guild, member);
   if (!ctx) return;
   if (!canManageTicket(member, ctx.ticket, guild.id)) {
@@ -469,7 +374,7 @@ async function runTranscript(interaction: ChatInputCommandInteraction, guild: Gu
     .catch(() => {});
 }
 
-async function runStats(interaction: ChatInputCommandInteraction, guild: Guild, member: GuildMember): Promise<void> {
+async function actionStats(interaction: MessageComponentInteraction, guild: Guild, member: GuildMember): Promise<void> {
   if (!isStaff(member, guild.id)) {
     await deny(interaction, "Réservé à l'équipe support.");
     return;
@@ -505,7 +410,35 @@ async function runStats(interaction: ChatInputCommandInteraction, guild: Guild, 
       ),
     ],
     flags: FLAGS_V2_EPHEMERAL,
-  });
+  }).catch(() => {});
+}
+
+/** Demande de confirmation de fermeture (boutons), en éphémère. */
+async function askCloseConfirmation(
+  interaction: ChatInputCommandInteraction | MessageComponentInteraction,
+  ticket: Ticket
+): Promise<void> {
+  const payload = {
+    components: [
+      panel(
+        [
+          textBlock(`# 🔒 Fermer le ticket #${ticket.id} ?\n> Le salon sera verrouillé, un feedback te sera demandé, puis le salon sera supprimé.`),
+        ],
+        GOLD
+      ),
+      actionRow(
+        button(`ticket:closeconfirm:${ticket.id}`, "Confirmer", ButtonStyle.Danger, "🔒"),
+        button(`ticket:closecancel:${ticket.id}`, "Annuler", ButtonStyle.Secondary)
+      ),
+    ],
+    flags: FLAGS_V2_EPHEMERAL,
+  };
+  if (interaction.isMessageComponent()) {
+    if (interaction.deferred || interaction.replied) await interaction.followUp(payload).catch(() => {});
+    else await interaction.reply(payload).catch(() => {});
+  } else {
+    await interaction.reply(payload).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +456,13 @@ export async function handleComponent(interaction: MessageComponentInteraction):
   const kind = parts[1];
   try {
     switch (kind) {
+      case "menu": {
+        if (!interaction.isStringSelectMenu()) return;
+        const action = interaction.values[0];
+        if (!action) return;
+        await handleHubAction(interaction, guild, member, action);
+        break;
+      }
       case "close": {
         const ticketId = Number(parts[2]);
         if (!Number.isInteger(ticketId)) return;
@@ -567,6 +507,55 @@ export async function handleComponent(interaction: MessageComponentInteraction):
     }
   } catch (err) {
     console.error(`[tickets] erreur composant ${interaction.customId}`, err);
+  }
+}
+
+/** Routage des actions choisies dans le menu du hub. */
+async function handleHubAction(
+  interaction: MessageComponentInteraction,
+  guild: Guild,
+  member: GuildMember,
+  action: string
+): Promise<void> {
+  switch (action) {
+    case "new":
+      await actionNew(interaction, guild, member);
+      break;
+    case "close":
+      await actionClose(interaction, guild, member);
+      break;
+    case "claim":
+      await actionClaim(interaction, guild, member);
+      break;
+    case "release":
+      await actionRelease(interaction, guild, member);
+      break;
+    case "add":
+      await openAddModal(interaction, guild, member);
+      break;
+    case "remove":
+      await openRemoveModal(interaction, guild, member);
+      break;
+    case "rename":
+      await openRenameModal(interaction, guild, member);
+      break;
+    case "topic":
+      await openTopicModal(interaction, guild, member);
+      break;
+    case "priority":
+      await openPriorityModal(interaction, guild, member);
+      break;
+    case "transfer":
+      await openTransferModal(interaction, guild, member);
+      break;
+    case "transcript":
+      await actionTranscript(interaction, guild, member);
+      break;
+    case "stats":
+      await actionStats(interaction, guild, member);
+      break;
+    default:
+      await deny(interaction, "Action inconnue.");
   }
 }
 
@@ -757,6 +746,10 @@ async function handleFeedbackCommentButton(
 // Modals
 // ---------------------------------------------------------------------------
 
+async function denyModal(interaction: ModalSubmitInteraction, msg: string): Promise<void> {
+  await interaction.reply({ components: [errPanel(msg)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+}
+
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) return;
@@ -771,11 +764,11 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
   if (kind === "topic") {
     const ticket = checkTicket(guild.id, ticketId);
     if (!ticket) {
-      await interaction.reply({ components: [errPanel("Ticket introuvable ou déjà fermé.")], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      await denyModal(interaction, "Ticket introuvable ou déjà fermé.");
       return;
     }
     if (!canManageTicket(member, ticket, guild.id)) {
-      await interaction.reply({ components: [errPanel("Tu ne peux gérer que tes propres tickets.")], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      await denyModal(interaction, "Tu ne peux gérer que tes propres tickets.");
       return;
     }
     const topic = interaction.fields.getTextInputValue("topic").trim().slice(0, LIMITS.topic);
@@ -796,11 +789,164 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
   if (kind === "fbcomment") {
     const fb = getFeedback(ticketId);
     if (!fb || fb.guild_id !== guild.id || fb.user_id !== member.id) {
-      await interaction.reply({ components: [errPanel("Feedback introuvable.")], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      await denyModal(interaction, "Feedback introuvable.");
       return;
     }
     const comment = interaction.fields.getTextInputValue("comment").trim().slice(0, 1000);
     saveFeedback(ticketId, guild.id, member.id, fb.rating, comment);
     await interaction.reply({ components: [okPanel("💬 Commentaire enregistré, merci !")], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+    return;
   }
+
+  if (kind === "modal") {
+    const action = parts[2] ?? "";
+    const id = Number(parts[3]);
+    if (!action || !Number.isInteger(id)) return;
+    await handleHubModal(interaction, guild, member, action, id);
+  }
+}
+
+/** Traite les modals ouverts depuis le hub (add / remove / rename / priority / transfer). */
+async function handleHubModal(
+  interaction: ModalSubmitInteraction,
+  guild: Guild,
+  member: GuildMember,
+  action: string,
+  ticketId: number
+): Promise<void> {
+  const ticket = checkTicket(guild.id, ticketId);
+  if (!ticket) {
+    await denyModal(interaction, "Ticket introuvable ou déjà fermé.");
+    return;
+  }
+  const channel = ticket.channel_id ? await guild.channels.fetch(ticket.channel_id).catch(() => null) : null;
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    await denyModal(interaction, "Salon du ticket introuvable.");
+    return;
+  }
+
+  switch (action) {
+    case "add": {
+      if (!canManageTicket(member, ticket, guild.id)) {
+        await denyModal(interaction, "Tu ne peux gérer que tes propres tickets.");
+        return;
+      }
+      const user = interaction.fields.getSelectedUsers("membre")?.first();
+      if (!user) {
+        await denyModal(interaction, "Choisis un membre.");
+        return;
+      }
+      if (user.bot) {
+        await denyModal(interaction, "Impossible d'ajouter un bot.");
+        return;
+      }
+      await applyAdd(guild, member, ticket, channel, user);
+      await interaction.reply({ components: [okPanel(`✅ <@${user.id}> a été ajouté au ticket.`)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      break;
+    }
+    case "remove": {
+      if (!canManageTicket(member, ticket, guild.id)) {
+        await denyModal(interaction, "Tu ne peux gérer que tes propres tickets.");
+        return;
+      }
+      const user = interaction.fields.getSelectedUsers("membre")?.first();
+      if (!user) {
+        await denyModal(interaction, "Choisis un membre.");
+        return;
+      }
+      if (user.id === ticket.creator_id) {
+        await denyModal(interaction, "Impossible de retirer le créateur du ticket.");
+        return;
+      }
+      const target = await guild.members.fetch(user.id).catch(() => null);
+      if (target && isStaff(target, guild.id)) {
+        await denyModal(interaction, "Impossible de retirer un membre de l'équipe support.");
+        return;
+      }
+      await channel.permissionOverwrites.delete(user.id).catch(() => null);
+      await interaction.reply({ components: [okPanel(`✅ <@${user.id}> a été retiré du ticket.`)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      break;
+    }
+    case "rename": {
+      if (!canManageTicket(member, ticket, guild.id)) {
+        await denyModal(interaction, "Tu ne peux gérer que tes propres tickets.");
+        return;
+      }
+      const name = sanitizeChannelName(interaction.fields.getTextInputValue("nom").trim());
+      await channel.setName(name).catch(() => null);
+      await interaction.reply({ components: [okPanel(`✅ Salon renommé en **${name}**.`)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      break;
+    }
+    case "priority": {
+      if (!isStaff(member, guild.id)) {
+        await denyModal(interaction, "Réservé à l'équipe support.");
+        return;
+      }
+      const level = interaction.fields.getStringSelectValues("niveau")[0] as Ticket["priority"] | undefined;
+      if (!level || !["haute", "normale", "basse"].includes(level)) {
+        await denyModal(interaction, "Niveau de priorité invalide.");
+        return;
+      }
+      setTicketPriority(ticket.id, level);
+      await channel
+        .send({ components: [panel([textBlock(`⚡ Priorité du ticket définie sur **${priorityLabel(level)}** par <@${member.id}>.`)], GOLD)], flags: FLAGS_V2 })
+        .catch(() => {});
+      await interaction.reply({ components: [okPanel(`✅ Priorité : **${priorityLabel(level)}**.`)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      break;
+    }
+    case "transfer": {
+      if (!isStaff(member, guild.id)) {
+        await denyModal(interaction, "Réservé à l'équipe support.");
+        return;
+      }
+      const user = interaction.fields.getSelectedUsers("membre")?.first();
+      if (!user) {
+        await denyModal(interaction, "Choisis un membre.");
+        return;
+      }
+      if (user.bot) {
+        await denyModal(interaction, "Impossible de transférer à un bot.");
+        return;
+      }
+      if (user.id === ticket.creator_id) {
+        await denyModal(interaction, "Cette personne est déjà la créatrice du ticket.");
+        return;
+      }
+      const target = await guild.members.fetch(user.id).catch(() => null);
+      if (!target) {
+        await denyModal(interaction, "Ce membre n'est pas sur le serveur.");
+        return;
+      }
+      await channel.permissionOverwrites.delete(ticket.creator_id).catch(() => null);
+      await channel.permissionOverwrites
+        .edit(user.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true })
+        .catch(() => null);
+      dbTransferTicket(ticket.id, user.id);
+      await channel
+        .send({ components: [panel([textBlock(`🔄 Ticket transféré à <@${user.id}> par <@${member.id}>.`)], BLUE)], flags: FLAGS_V2 })
+        .catch(() => {});
+      await interaction.reply({ components: [okPanel(`✅ Ticket transféré à <@${user.id}>.`)], flags: FLAGS_V2_EPHEMERAL }).catch(() => {});
+      break;
+    }
+    default:
+      await denyModal(interaction, "Action inconnue.");
+  }
+}
+
+/** Applique l'ajout d'un membre au salon ticket. */
+async function applyAdd(
+  _guild: Guild,
+  _member: GuildMember,
+  _ticket: Ticket,
+  channel: TextChannel,
+  user: User
+): Promise<void> {
+  await channel.permissionOverwrites
+    .edit(user.id, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+      AttachFiles: true,
+    })
+    .catch(() => null);
 }

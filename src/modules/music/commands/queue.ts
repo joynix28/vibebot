@@ -1,6 +1,5 @@
-import { SlashCommandBuilder, ButtonStyle, ContainerBuilder, ActionRowBuilder } from "discord.js";
+import { ButtonStyle, ContainerBuilder, ActionRowBuilder } from "discord.js";
 import type {
-  ChatInputCommandInteraction,
   MessageComponentInteraction,
   MessageActionRowComponentBuilder,
 } from "discord.js";
@@ -15,10 +14,7 @@ import {
 } from "../../../core/ui.ts";
 import { getQueue, formatDuration, LOOP_LABELS } from "../func/player.ts";
 import type { MusicQueue } from "../func/player.ts";
-
-export const data = new SlashCommandBuilder()
-  .setName("queue")
-  .setDescription("Affiche la file d'attente musicale (paginée).");
+import type { HubInteraction } from "./_hub.ts";
 
 const PAGE_SIZE = 10;
 
@@ -49,15 +45,15 @@ function queuePage(queue: MusicQueue, page: number) {
   if (totalPages > 1) {
     comps.push(
       actionRow(
-        button(`queue:page:${p - 1}`, "◀", ButtonStyle.Secondary, undefined, p === 0),
-        button(`queue:page:${p + 1}`, "▶", ButtonStyle.Secondary, undefined, p >= totalPages - 1)
+        button(`musique:queuepage:${p - 1}`, "◀", ButtonStyle.Secondary, undefined, p === 0),
+        button(`musique:queuepage:${p + 1}`, "▶", ButtonStyle.Secondary, undefined, p >= totalPages - 1)
       )
     );
   }
   return { comps, page: p };
 }
 
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function runQueue(interaction: HubInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
@@ -72,10 +68,10 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   await interaction.reply({ components: comps, flags: FLAGS_V2 });
 }
 
-export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+export async function handleQueuePage(interaction: MessageComponentInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) return;
-  const [, , rawPage] = interaction.customId.split(":");
+  const rawPage = interaction.customId.split(":")[2];
   const page = Number(rawPage ?? "0");
   const queue = getQueue(guild.id);
   if (!queue?.nowPlaying()) {

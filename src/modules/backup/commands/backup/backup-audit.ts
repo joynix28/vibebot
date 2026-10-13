@@ -1,18 +1,13 @@
-import { SlashCommandBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } from "discord.js";
+import { SlashCommandBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ContainerBuilder, TextDisplayBuilder } from "discord.js";
 import type { ChatInputCommandInteraction, MessageComponentInteraction, MessageActionRowComponentBuilder } from "discord.js";
+import { ACCENT, FLAGS_V2_EPHEMERAL } from "../../../../core/ui.ts";
 import { row, btn, panelWith, tx, V2E, type Blk } from "../../func/ui.ts";
 import { alList, alCnt } from "../../func/db.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("backup-audit")
-  .setDescription("Get a list of actions that were recently taken on this server")
-  .setDefaultMemberPermissions(8)
-  .addSubcommand((s) =>
-    s
-      .setName("logs")
-      .setDescription("Get a list of actions that were recently taken on this server")
-      .addIntegerOption((o) => o.setName("page").setDescription("The page to display (default 1)").setRequired(false))
-  );
+  .setDescription("Voir les actions récentes effectuées sur ce serveur")
+  .setDefaultMemberPermissions(8);
 
 const bl = 0x4a9fe0;
 
@@ -32,6 +27,25 @@ const F = [
   { label: "Backup Sync Create", value: "12" },
   { label: "Import Guild", value: "13" },
 ];
+
+function hubPanel(): ContainerBuilder {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("backup-audit:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Voir les logs")
+        .setValue("logs")
+        .setDescription("Liste des actions récentes sur le serveur")
+        .setEmoji("📋")
+    );
+  return new ContainerBuilder()
+    .setAccentColor(ACCENT)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("# 📋 Audit des backups\nChoisis une action dans le menu ci-dessous.")
+    )
+    .addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
+}
 
 function mask2arr(mask: number): number[] {
   return F.map((o) => Number(o.value)).filter((n) => (mask & (1 << n)) !== 0);
@@ -84,14 +98,19 @@ async function render(interaction: ChatInputCommandInteraction | MessageComponen
 }
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const sub = interaction.options.getSubcommand();
-  if (sub !== "logs") return;
-  const page = interaction.options.getInteger("page") ?? 1;
-  await render(interaction, page, 16383);
+  await interaction.reply({ components: [hubPanel()], flags: FLAGS_V2_EPHEMERAL });
 }
 
 export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
   const cid = interaction.customId;
+
+  if (cid === "backup-audit:menu" && interaction.isStringSelectMenu()) {
+    const action = interaction.values[0];
+    if (action === "logs") {
+      await render(interaction, 1, 16383);
+    }
+    return;
+  }
 
   if (cid.startsWith("backup-audit:audit_logs_filter") && interaction.isStringSelectMenu()) {
     const mask = interaction.values.reduce((acc, v) => acc | (1 << Number(v)), 0);

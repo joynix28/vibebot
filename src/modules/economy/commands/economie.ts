@@ -5,8 +5,23 @@ import {
   SectionBuilder,
   TextDisplayBuilder,
   ThumbnailBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ModalBuilder,
+  LabelBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
-import type { ChatInputCommandInteraction, MessageComponentInteraction } from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+  StringSelectMenuInteraction,
+  MessageActionRowComponentBuilder,
+  User,
+  Guild,
+} from "discord.js";
 import {
   FLAGS_V2,
   FLAGS_V2_EPHEMERAL,
@@ -53,10 +68,6 @@ function randInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function guildIdOf(i: ChatInputCommandInteraction | MessageComponentInteraction): string | null {
-  return i.guild?.id ?? null;
-}
-
 async function needGuild(i: ChatInputCommandInteraction): Promise<string | null> {
   if (!i.guild) {
     await i.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
@@ -65,83 +76,312 @@ async function needGuild(i: ChatInputCommandInteraction): Promise<string | null>
   return i.guild.id;
 }
 
+/** Fonction de réponse unifiée : followUp (menu) ou reply (modal). */
+type V2Component = ContainerBuilder | ActionRowBuilder<MessageActionRowComponentBuilder>;
+type Respond = (components: V2Component[], flags?: number) => Promise<unknown>;
+
+/** Résout un membre depuis une mention ou un ID Discord. */
+async function resolveMember(guild: Guild, input: string): Promise<User | null> {
+  const m = input.trim().match(/^<@!?(\d+)>$/) ?? input.trim().match(/^(\d{15,25})$/);
+  if (!m) return null;
+  try {
+    const member = await guild.members.fetch(m[1]!);
+    return member.user;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse un montant saisi dans un modal. */
+function parseAmount(raw: string): number | null {
+  const n = Number(raw.trim());
+  if (!isValidAmount(n) || n > MAX_AMOUNT) return null;
+  return n;
+}
+
 // ---------------------------------------------------------------------------
-// Définition de la commande
+// Définition de la commande (hub sans sous-commandes)
 // ---------------------------------------------------------------------------
 
 export const data = new SlashCommandBuilder()
   .setName("economie")
-  .setDescription("Monnaie du serveur, boutique et casino.")
-  .addSubcommand((s) => s.setName("solde").setDescription("Affiche ton portefeuille et ta banque.")
-    .addUserOption((o) => o.setName("membre").setDescription("Voir le solde d'un autre membre.")))
-  .addSubcommand((s) => s.setName("quotidien").setDescription("Récupère ta récompense quotidienne."))
-  .addSubcommand((s) => s.setName("travailler").setDescription("Travaille pour gagner des pièces (1h de cooldown)."))
-  .addSubcommand((s) => s.setName("payer").setDescription("Transfère des pièces à un membre.")
-    .addUserOption((o) => o.setName("membre").setDescription("Le destinataire.").setRequired(true))
-    .addIntegerOption((o) => o.setName("montant").setDescription("Montant à transférer.").setRequired(true).setMinValue(1)))
-  .addSubcommand((s) => s.setName("depot").setDescription("Dépose des pièces à la banque (protégées des vols).")
-    .addIntegerOption((o) => o.setName("montant").setDescription("Montant à déposer.").setRequired(true).setMinValue(1)))
-  .addSubcommand((s) => s.setName("retrait").setDescription("Retire des pièces de ta banque.")
-    .addIntegerOption((o) => o.setName("montant").setDescription("Montant à retirer.").setRequired(true).setMinValue(1)))
-  .addSubcommand((s) => s.setName("boutique").setDescription("Affiche la boutique du serveur."))
-  .addSubcommand((s) => s.setName("acheter").setDescription("Achète un objet de la boutique.")
-    .addStringOption((o) => o.setName("objet").setDescription("Identifiant de l'objet.").setRequired(true)))
-  .addSubcommand((s) => s.setName("inventaire").setDescription("Affiche ton inventaire."))
-  .addSubcommand((s) => s.setName("classement").setDescription("Top 10 des plus riches du serveur."))
-  .addSubcommand((s) => s.setName("crime").setDescription("Commet un crime : gros gain ou amende (30 min de cooldown)."))
-  .addSubcommand((s) => s.setName("voler").setDescription("Vole le portefeuille d'un membre (risqué, 2h de cooldown).")
-    .addUserOption((o) => o.setName("membre").setDescription("Ta victime.").setRequired(true)))
-  .addSubcommand((s) => s.setName("parier").setDescription("Pile ou face : double ta mise ou perds-la.")
-    .addStringOption((o) => o.setName("choix").setDescription("Ton choix.").setRequired(true)
-      .addChoices({ name: "🪙 Pile", value: "pile" }, { name: "👑 Face", value: "face" }))
-    .addIntegerOption((o) => o.setName("mise").setDescription("Ta mise.").setRequired(true).setMinValue(1)))
-  .addSubcommand((s) => s.setName("slots").setDescription("Machine à sous.")
-    .addIntegerOption((o) => o.setName("mise").setDescription("Ta mise.").setRequired(true).setMinValue(1)))
-  .addSubcommand((s) => s.setName("blackjack").setDescription("Blackjack contre la banque (21).")
-    .addIntegerOption((o) => o.setName("mise").setDescription("Ta mise.").setRequired(true).setMinValue(1)))
-  .addSubcommand((s) => s.setName("roulette").setDescription("Roulette : rouge/noir (x2) ou vert (x14).")
-    .addStringOption((o) => o.setName("couleur").setDescription("Ta couleur.").setRequired(true)
-      .addChoices({ name: "🔴 Rouge", value: "rouge" }, { name: "⚫ Noir", value: "noir" }, { name: "🟢 Vert (zéro)", value: "vert" }))
-    .addIntegerOption((o) => o.setName("mise").setDescription("Ta mise.").setRequired(true).setMinValue(1)));
+  .setDescription("Monnaie du serveur, boutique et casino.");
 
-// ---------------------------------------------------------------------------
-// Execute
-// ---------------------------------------------------------------------------
+const MENU_OPTIONS: { value: string; label: string; emoji: string; description: string; modal: boolean }[] = [
+  { value: "solde", label: "Solde", emoji: "💰", description: "Ton portefeuille et ta banque", modal: false },
+  { value: "quotidien", label: "Quotidien", emoji: "🎁", description: "Ta récompense quotidienne", modal: false },
+  { value: "travailler", label: "Travailler", emoji: "💼", description: "Gagne des pièces en travaillant", modal: false },
+  { value: "payer", label: "Payer", emoji: "💸", description: "Envoie des pièces à un membre", modal: true },
+  { value: "depot", label: "Dépôt", emoji: "🏦", description: "Protège tes pièces à la banque", modal: true },
+  { value: "retrait", label: "Retrait", emoji: "💵", description: "Retire des pièces de ta banque", modal: true },
+  { value: "boutique", label: "Boutique", emoji: "🛒", description: "Voir les objets en vente", modal: false },
+  { value: "acheter", label: "Acheter", emoji: "🛍️", description: "Achète un objet de la boutique", modal: true },
+  { value: "inventaire", label: "Inventaire", emoji: "🎒", description: "Voir tes objets possédés", modal: false },
+  { value: "classement", label: "Classement", emoji: "🏆", description: "Top 10 des plus riches", modal: false },
+  { value: "crime", label: "Crime", emoji: "🕶️", description: "Gros gain ou amende (risqué)", modal: false },
+  { value: "voler", label: "Voler", emoji: "🥷", description: "Vole un membre (très risqué)", modal: true },
+  { value: "parier", label: "Parier", emoji: "🪙", description: "Pile ou face : double ou rien", modal: true },
+  { value: "slots", label: "Slots", emoji: "🎰", description: "Machine à sous", modal: true },
+  { value: "blackjack", label: "Blackjack", emoji: "🃏", description: "Blackjack contre la banque", modal: true },
+  { value: "roulette", label: "Roulette", emoji: "🎡", description: "Rouge / noir / vert", modal: true },
+];
+
+const MODAL_ACTIONS = new Set(MENU_OPTIONS.filter((o) => o.modal).map((o) => o.value));
+
+function hubMenu(): ContainerBuilder {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("economie:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      MENU_OPTIONS.map((o) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(o.label)
+          .setValue(o.value)
+          .setEmoji(o.emoji)
+          .setDescription(o.description)
+      )
+    );
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  return new ContainerBuilder()
+    .setAccentColor(GOLD)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("## 💰 Économie\nChoisis une action dans le menu ci-dessous 👇")
+    )
+    .addActionRowComponents(row);
+}
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = await needGuild(interaction);
   if (!guildId) return;
-  const sub = interaction.options.getSubcommand();
-  const uid = interaction.user.id;
+  await interaction.reply({ components: [hubMenu()], flags: FLAGS_V2_EPHEMERAL });
+}
 
-  switch (sub) {
-    case "solde": return cmdSolde(interaction, guildId);
-    case "quotidien": return cmdQuotidien(interaction, guildId, uid);
-    case "travailler": return cmdTravailler(interaction, guildId, uid);
-    case "payer": return cmdPayer(interaction, guildId, uid);
-    case "depot": return cmdDepot(interaction, guildId, uid);
-    case "retrait": return cmdRetrait(interaction, guildId, uid);
-    case "boutique": return cmdBoutique(interaction, guildId);
-    case "acheter": return cmdAcheter(interaction, guildId, uid);
-    case "inventaire": return cmdInventaire(interaction, guildId, uid);
-    case "classement": return cmdClassement(interaction, guildId);
-    case "crime": return cmdCrime(interaction, guildId, uid);
-    case "voler": return cmdVoler(interaction, guildId, uid);
-    case "parier": return cmdParier(interaction, guildId, uid);
-    case "slots": return cmdSlots(interaction, guildId, uid);
-    case "blackjack": return cmdBlackjack(interaction, guildId, uid);
-    case "roulette": return cmdRoulette(interaction, guildId, uid);
+// ---------------------------------------------------------------------------
+// Modals
+// ---------------------------------------------------------------------------
+
+function textField(id: string, label: string, max: number, placeholder?: string, required = true, paragraph = false): LabelBuilder {
+  const input = new TextInputBuilder()
+    .setCustomId(id)
+    .setStyle(paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short)
+    .setRequired(required)
+    .setMaxLength(max);
+  if (placeholder) input.setPlaceholder(placeholder);
+  return new LabelBuilder().setLabel(label).setTextInputComponent(input);
+}
+
+function modalFor(action: string): ModalBuilder | null {
+  const base = (title: string) => new ModalBuilder().setCustomId(`economie:modal:${action}`).setTitle(title);
+  switch (action) {
+    case "payer":
+      return base("💸 Payer un membre").addLabelComponents(
+        textField("membre", "Membre", 60, "@pseudo ou ID Discord"),
+        textField("montant", "Montant", 12, "Ex : 500")
+      );
+    case "depot":
+      return base("🏦 Déposer à la banque").addLabelComponents(
+        textField("montant", "Montant", 12, "Ex : 1000")
+      );
+    case "retrait":
+      return base("💵 Retirer de la banque").addLabelComponents(
+        textField("montant", "Montant", 12, "Ex : 1000")
+      );
+    case "acheter":
+      return base("🛍️ Acheter un objet").addLabelComponents(
+        textField("objet", "Identifiant de l'objet", 40, "Ex : vip")
+      );
+    case "voler":
+      return base("🥷 Voler un membre").addLabelComponents(
+        textField("membre", "Victime", 60, "@pseudo ou ID Discord")
+      );
+    case "parier":
+      return base("🪙 Pile ou face").addLabelComponents(
+        textField("choix", "Ton choix", 10, "pile ou face"),
+        textField("mise", "Mise", 12, "Ex : 100")
+      );
+    case "slots":
+      return base("🎰 Machine à sous").addLabelComponents(
+        textField("mise", "Mise", 12, "Ex : 100")
+      );
+    case "blackjack":
+      return base("🃏 Blackjack").addLabelComponents(
+        textField("mise", "Mise", 12, "Ex : 100")
+      );
+    case "roulette":
+      return base("🎡 Roulette").addLabelComponents(
+        textField("couleur", "Couleur", 10, "rouge, noir ou vert"),
+        textField("mise", "Mise", 12, "Ex : 100")
+      );
     default:
-      await interaction.reply({ components: [errPanel("Sous-commande inconnue.")], flags: FLAGS_V2_EPHEMERAL });
+      return null;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Sous-commandes
+// handleComponent : menu hub + boutons blackjack
 // ---------------------------------------------------------------------------
 
-async function cmdSolde(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
-  const target = interaction.options.getUser("membre") ?? interaction.user;
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const guildId = guild.id;
+  const parts = interaction.customId.split(":");
+
+  // Boutons du blackjack : economie:bj:hit / economie:bj:stand
+  if (parts[1] === "bj") {
+    await handleBjButton(interaction, guildId);
+    return;
+  }
+
+  if (interaction.customId !== "economie:menu" || !interaction.isStringSelectMenu()) return;
+
+  const uid = interaction.user.id;
+  const action = interaction.values[0] ?? "";
+
+  // Actions avec formulaire : le modal doit être la première réponse.
+  if (MODAL_ACTIONS.has(action)) {
+    const modal = modalFor(action);
+    if (modal) await (interaction as StringSelectMenuInteraction).showModal(modal);
+    return;
+  }
+
+  await interaction.deferUpdate();
+  const send: Respond = (components, flags = FLAGS_V2_EPHEMERAL) =>
+    interaction.followUp({ components, flags });
+
+  switch (action) {
+    case "solde": return doSolde(guildId, interaction.user, send);
+    case "quotidien": return doQuotidien(guildId, uid, send);
+    case "travailler": return doTravailler(guildId, uid, send);
+    case "boutique": return doBoutique(guildId, send);
+    case "inventaire": return doInventaire(guildId, uid, interaction.user, send);
+    case "classement": return doClassement(guildId, send);
+    case "crime": return doCrime(guildId, uid, send);
+    default: return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleModal
+// ---------------------------------------------------------------------------
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const guildId = guild.id;
+  const uid = interaction.user.id;
+  const parts = interaction.customId.split(":"); // economie:modal:<action>
+  if (parts[1] !== "modal") return;
+  const action = parts[2] ?? "";
+
+  const send: Respond = (components, flags = FLAGS_V2_EPHEMERAL) =>
+    interaction.reply({ components, flags });
+  const field = (name: string): string => {
+    try {
+      return interaction.fields.getTextInputValue(name);
+    } catch {
+      return "";
+    }
+  };
+
+  switch (action) {
+    case "payer": {
+      const target = await resolveMember(guild, field("membre"));
+      if (!target) {
+        await send([errPanel("Membre introuvable. Mentionne-le avec @ ou colle son identifiant Discord.")]);
+        return;
+      }
+      const montant = parseAmount(field("montant"));
+      if (montant === null) {
+        await send([errPanel("Montant invalide (nombre entier positif).")]);
+        return;
+      }
+      return doPayer(guildId, uid, target, montant, send);
+    }
+    case "depot": {
+      const montant = parseAmount(field("montant"));
+      if (montant === null) {
+        await send([errPanel("Montant invalide (nombre entier positif).")]);
+        return;
+      }
+      return doDepot(guildId, uid, montant, send);
+    }
+    case "retrait": {
+      const montant = parseAmount(field("montant"));
+      if (montant === null) {
+        await send([errPanel("Montant invalide (nombre entier positif).")]);
+        return;
+      }
+      return doRetrait(guildId, uid, montant, send);
+    }
+    case "acheter": {
+      const objet = field("objet").trim();
+      if (!objet) {
+        await send([errPanel("Indique l'identifiant de l'objet.")]);
+        return;
+      }
+      return doAcheter(guildId, uid, objet, send);
+    }
+    case "voler": {
+      const target = await resolveMember(guild, field("membre"));
+      if (!target) {
+        await send([errPanel("Membre introuvable. Mentionne-le avec @ ou colle son identifiant Discord.")]);
+        return;
+      }
+      return doVoler(guildId, uid, target, send);
+    }
+    case "parier": {
+      const choix = field("choix").trim().toLowerCase();
+      if (choix !== "pile" && choix !== "face") {
+        await send([errPanel('Choix invalide : écris "pile" ou "face".')]);
+        return;
+      }
+      const mise = parseAmount(field("mise"));
+      if (mise === null) {
+        await send([errPanel("Mise invalide (nombre entier positif).")]);
+        return;
+      }
+      return doParier(guildId, uid, choix, mise, send);
+    }
+    case "slots": {
+      const mise = parseAmount(field("mise"));
+      if (mise === null) {
+        await send([errPanel("Mise invalide (nombre entier positif).")]);
+        return;
+      }
+      return doSlots(guildId, uid, mise, send);
+    }
+    case "blackjack": {
+      const mise = parseAmount(field("mise"));
+      if (mise === null) {
+        await send([errPanel("Mise invalide (nombre entier positif).")]);
+        return;
+      }
+      return doBlackjack(guildId, uid, mise, send);
+    }
+    case "roulette": {
+      const couleur = field("couleur").trim().toLowerCase();
+      if (couleur !== "rouge" && couleur !== "noir" && couleur !== "vert") {
+        await send([errPanel('Couleur invalide : écris "rouge", "noir" ou "vert".')]);
+        return;
+      }
+      const mise = parseAmount(field("mise"));
+      if (mise === null) {
+        await send([errPanel("Mise invalide (nombre entier positif).")]);
+        return;
+      }
+      return doRoulette(guildId, uid, couleur, mise, send);
+    }
+    default:
+      return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Logique métier
+// ---------------------------------------------------------------------------
+
+async function doSolde(guildId: string, target: User, send: Respond): Promise<void> {
   const u = getUser(guildId, target.id);
   const cfg = getConfig(guildId);
   const section = new SectionBuilder()
@@ -156,25 +396,19 @@ async function cmdSolde(interaction: ChatInputCommandInteraction, guildId: strin
   const container = new ContainerBuilder()
     .setAccentColor(GOLD)
     .addSectionComponents(section);
-  await interaction.reply({ components: [container], flags: FLAGS_V2_EPHEMERAL });
+  await send([container]);
 }
 
-async function cmdQuotidien(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
+async function doQuotidien(guildId: string, uid: string, send: Respond): Promise<void> {
   const rest = cooldownRemainingMs(guildId, uid, "last_daily", CD_DAILY_MS);
   if (rest > 0) {
-    await interaction.reply({
-      components: [errPanel(`⏳ Tu as déjà récupéré ton quotidien. Reviens dans **${formatDuration(rest)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`⏳ Tu as déjà récupéré ton quotidien. Reviens dans **${formatDuration(rest)}**.`)]);
     return;
   }
   const amount = getConfig(guildId).daily_amount;
   creditWallet(guildId, uid, amount);
   setCooldown(guildId, uid, "last_daily");
-  await interaction.reply({
-    components: [okPanel(`🎁 Récompense quotidienne : **+${fmt(guildId, amount)}** !\nReviens demain pour la prochaine.`)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([okPanel(`🎁 Récompense quotidienne : **+${fmt(guildId, amount)}** !\nReviens demain pour la prochaine.`)]);
 }
 
 const JOBS = [
@@ -182,13 +416,10 @@ const JOBS = [
   "chauffeur VTC", "pâtissier", "graphiste", "plombier", "professeur particulier",
 ];
 
-async function cmdTravailler(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
+async function doTravailler(guildId: string, uid: string, send: Respond): Promise<void> {
   const rest = cooldownRemainingMs(guildId, uid, "last_work", CD_WORK_MS);
   if (rest > 0) {
-    await interaction.reply({
-      components: [errPanel(`😮‍💨 Repose-toi un peu ! Tu pourras retravailler dans **${formatDuration(rest)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`😮‍💨 Repose-toi un peu ! Tu pourras retravailler dans **${formatDuration(rest)}**.`)]);
     return;
   }
   const cfg = getConfig(guildId);
@@ -196,151 +427,113 @@ async function cmdTravailler(interaction: ChatInputCommandInteraction, guildId: 
   const job = JOBS[randInt(0, JOBS.length - 1)]!;
   creditWallet(guildId, uid, gain);
   setCooldown(guildId, uid, "last_work");
-  await interaction.reply({
-    components: [okPanel(`💼 Tu as travaillé comme **${job}** et gagné **+${fmt(guildId, gain)}** !`)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([okPanel(`💼 Tu as travaillé comme **${job}** et gagné **+${fmt(guildId, gain)}** !`)]);
 }
 
-async function cmdPayer(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const target = interaction.options.getUser("membre", true);
-  const montant = interaction.options.getInteger("montant", true);
+async function doPayer(guildId: string, uid: string, target: User, montant: number, send: Respond): Promise<void> {
   if (target.id === uid) {
-    await interaction.reply({ components: [errPanel("Tu ne peux pas te payer toi-même.")], flags: FLAGS_V2_EPHEMERAL });
+    await send([errPanel("Tu ne peux pas te payer toi-même.")]);
     return;
   }
   if (target.bot) {
-    await interaction.reply({ components: [errPanel("Tu ne peux pas payer un bot.")], flags: FLAGS_V2_EPHEMERAL });
+    await send([errPanel("Tu ne peux pas payer un bot.")]);
     return;
   }
   if (!isValidAmount(montant) || montant > MAX_AMOUNT) {
-    await interaction.reply({ components: [errPanel("Montant invalide.")], flags: FLAGS_V2_EPHEMERAL });
+    await send([errPanel("Montant invalide.")]);
     return;
   }
   if (!transferWallet(guildId, uid, target.id, montant)) {
-    await interaction.reply({
-      components: [errPanel(`Solde insuffisant : il te faut **${fmt(guildId, montant)}** dans ton portefeuille.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`Solde insuffisant : il te faut **${fmt(guildId, montant)}** dans ton portefeuille.`)]);
     return;
   }
-  await interaction.reply({
-    components: [okPanel(`💸 Tu as envoyé **${fmt(guildId, montant)}** à ${target}.`)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([okPanel(`💸 Tu as envoyé **${fmt(guildId, montant)}** à ${target}.`)]);
 }
 
-async function cmdDepot(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const montant = interaction.options.getInteger("montant", true);
+async function doDepot(guildId: string, uid: string, montant: number, send: Respond): Promise<void> {
   if (!isValidAmount(montant) || montant > MAX_AMOUNT) {
-    await interaction.reply({ components: [errPanel("Montant invalide.")], flags: FLAGS_V2_EPHEMERAL });
+    await send([errPanel("Montant invalide.")]);
     return;
   }
   if (!walletToBank(guildId, uid, montant)) {
-    await interaction.reply({
-      components: [errPanel(`Solde insuffisant dans ton portefeuille pour déposer **${fmt(guildId, montant)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`Solde insuffisant dans ton portefeuille pour déposer **${fmt(guildId, montant)}**.`)]);
     return;
   }
-  await interaction.reply({
-    components: [okPanel(`🏦 **${fmt(guildId, montant)}** déposés à la banque. Ils sont à l'abri des voleurs !`)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([okPanel(`🏦 **${fmt(guildId, montant)}** déposés à la banque. Ils sont à l'abri des voleurs !`)]);
 }
 
-async function cmdRetrait(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const montant = interaction.options.getInteger("montant", true);
+async function doRetrait(guildId: string, uid: string, montant: number, send: Respond): Promise<void> {
   if (!isValidAmount(montant) || montant > MAX_AMOUNT) {
-    await interaction.reply({ components: [errPanel("Montant invalide.")], flags: FLAGS_V2_EPHEMERAL });
+    await send([errPanel("Montant invalide.")]);
     return;
   }
   if (!bankToWallet(guildId, uid, montant)) {
-    await interaction.reply({
-      components: [errPanel(`Ta banque ne contient pas **${fmt(guildId, montant)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`Ta banque ne contient pas **${fmt(guildId, montant)}**.`)]);
     return;
   }
-  await interaction.reply({
-    components: [okPanel(`💵 **${fmt(guildId, montant)}** retirés de ta banque.`)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([okPanel(`💵 **${fmt(guildId, montant)}** retirés de ta banque.`)]);
 }
 
-async function cmdBoutique(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
+async function doBoutique(guildId: string, send: Respond): Promise<void> {
   const items = listShop(guildId);
   if (items.length === 0) {
-    await interaction.reply({
-      components: [panel([textBlock("🛒 La boutique est vide pour le moment.\nUn administrateur peut ajouter des objets avec `/eco-admin boutique-ajouter`.")], ACCENT)],
-      flags: FLAGS_V2,
-    });
+    await send(
+      [panel([textBlock("🛒 La boutique est vide pour le moment.\nUn administrateur peut ajouter des objets via le menu de `/eco-admin`.")], ACCENT)],
+      FLAGS_V2
+    );
     return;
   }
   const lines = items.map((it, i) => `${i + 1}. **${it.name}** — \`${it.item_id}\`\n   💲 ${fmt(guildId, it.price)}${it.description ? ` — *${it.description}*` : ""}`);
-  await interaction.reply({
-    components: [panel([textBlock(`## 🛒 Boutique\n\n${lines.join("\n\n")}\n\n> Achète avec \`/economie acheter objet:<identifiant>\``)], GOLD)],
-    flags: FLAGS_V2,
-  });
+  await send(
+    [panel([textBlock(`## 🛒 Boutique\n\n${lines.join("\n\n")}\n\n> Achète via le menu « Acheter » avec l'identifiant de l'objet.`)], GOLD)],
+    FLAGS_V2
+  );
 }
 
-async function cmdAcheter(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const objet = interaction.options.getString("objet", true);
+async function doAcheter(guildId: string, uid: string, objet: string, send: Respond): Promise<void> {
   const res = buyItem(guildId, uid, objet);
   if (!res.ok) {
-    await interaction.reply({
-      components: [errPanel(res.item ? `Solde insuffisant : **${res.item.name}** coûte **${fmt(guildId, res.item.price)}**.` : `Objet \`${objet}\` introuvable. Vérifie l'identifiant avec \`/economie boutique\`.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([
+      errPanel(
+        res.item
+          ? `Solde insuffisant : **${res.item.name}** coûte **${fmt(guildId, res.item.price)}**.`
+          : `Objet \`${objet}\` introuvable. Vérifie l'identifiant via le menu « Boutique ».`
+      ),
+    ]);
     return;
   }
-  await interaction.reply({
-    components: [okPanel(`🛍️ Tu as acheté **${res.item!.name}** pour **${fmt(guildId, res.item!.price)}** !`)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([okPanel(`🛍️ Tu as acheté **${res.item!.name}** pour **${fmt(guildId, res.item!.price)}** !`)]);
 }
 
-async function cmdInventaire(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
+async function doInventaire(guildId: string, uid: string, viewer: User, send: Respond): Promise<void> {
   const inv = getInventory(guildId, uid);
   if (inv.length === 0) {
-    await interaction.reply({
-      components: [panel([textBlock("🎒 Ton inventaire est vide.\nFais un tour à la boutique avec `/economie boutique` !")], ACCENT)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([panel([textBlock("🎒 Ton inventaire est vide.\nFais un tour à la boutique via le menu « Boutique » !")], ACCENT)]);
     return;
   }
   const lines = inv.map((e, i) => `${i + 1}. **${e.name}** × ${e.qty}`);
-  await interaction.reply({
-    components: [panel([textBlock(`## 🎒 Inventaire de ${interaction.user}\n\n${lines.join("\n")}`)], ACCENT)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([panel([textBlock(`## 🎒 Inventaire de ${viewer}\n\n${lines.join("\n")}`)], ACCENT)]);
 }
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
-async function cmdClassement(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
+async function doClassement(guildId: string, send: Respond): Promise<void> {
   const top = topRichest(guildId, 10);
   if (top.length === 0) {
-    await interaction.reply({
-      components: [panel([textBlock("📊 Personne n'a encore de pièces. Sois le premier avec `/economie quotidien` !")], ACCENT)],
-      flags: FLAGS_V2,
-    });
+    await send(
+      [panel([textBlock("📊 Personne n'a encore de pièces. Sois le premier via le menu « Quotidien » !")], ACCENT)],
+      FLAGS_V2
+    );
     return;
   }
   const lines = top.map((r, i) => `${MEDALS[i] ?? `**${i + 1}.**`} <@${r.user_id}> — **${r.total.toLocaleString("fr-FR")}** ${getConfig(guildId).currency_name}`);
-  await interaction.reply({
-    components: [panel([textBlock(`## 🏆 Classement des fortunes\n\n${lines.join("\n")}`)], GOLD)],
-    flags: FLAGS_V2,
-  });
+  await send([panel([textBlock(`## 🏆 Classement des fortunes\n\n${lines.join("\n")}`)], GOLD)], FLAGS_V2);
 }
 
-async function cmdCrime(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
+async function doCrime(guildId: string, uid: string, send: Respond): Promise<void> {
   const rest = cooldownRemainingMs(guildId, uid, "last_crime", CD_CRIME_MS);
   if (rest > 0) {
-    await interaction.reply({
-      components: [errPanel(`🚔 Profil bas… Tu pourras retenter un crime dans **${formatDuration(rest)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`🚔 Profil bas… Tu pourras retenter un crime dans **${formatDuration(rest)}**.`)]);
     return;
   }
   const cfg = getConfig(guildId);
@@ -349,67 +542,47 @@ async function cmdCrime(interaction: ChatInputCommandInteraction, guildId: strin
     const u = getUser(guildId, uid);
     const amende = Math.min(u.wallet, randInt(100, 300));
     if (amende > 0) debitWallet(guildId, uid, amende);
-    await interaction.reply({
-      components: [panel([textBlock(`## 🚨 Pris la main dans le sac !\n\nLa police t'a arrêté : amende de **-${fmt(guildId, amende)}**.`)], RED)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([panel([textBlock(`## 🚨 Pris la main dans le sac !\n\nLa police t'a arrêté : amende de **-${fmt(guildId, amende)}**.`)], RED)]);
     return;
   }
   const gain = randInt(cfg.crime_min, cfg.crime_max);
   creditWallet(guildId, uid, gain);
-  await interaction.reply({
-    components: [panel([textBlock(`## 🕶️ Crime parfait !\n\nTu as braqué la banque du serveur : **+${fmt(guildId, gain)}**.\nPersonne ne t'a vu… cette fois.`)], GREEN)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([panel([textBlock(`## 🕶️ Crime parfait !\n\nTu as braqué la banque du serveur : **+${fmt(guildId, gain)}**.\nPersonne ne t'a vu… cette fois.`)], GREEN)]);
 }
 
-async function cmdVoler(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const target = interaction.options.getUser("membre", true);
+async function doVoler(guildId: string, uid: string, target: User, send: Respond): Promise<void> {
   if (target.id === uid) {
-    await interaction.reply({ components: [errPanel("Tu ne peux pas te voler toi-même.")], flags: FLAGS_V2_EPHEMERAL });
+    await send([errPanel("Tu ne peux pas te voler toi-même.")]);
     return;
   }
   if (target.bot) {
-    await interaction.reply({ components: [errPanel("Impossible de voler un bot.")], flags: FLAGS_V2_EPHEMERAL });
+    await send([errPanel("Impossible de voler un bot.")]);
     return;
   }
   const victim = getUser(guildId, target.id);
   if (victim.wallet < 200) {
-    await interaction.reply({
-      components: [errPanel(`${target} n'a pas assez de pièces dans son portefeuille (minimum 200).`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`${target} n'a pas assez de pièces dans son portefeuille (minimum 200).`)]);
     return;
   }
   const rest = cooldownRemainingMs(guildId, uid, "last_rob", CD_ROB_MS);
   if (rest > 0) {
-    await interaction.reply({
-      components: [errPanel(`🥷 Discret… Tu pourras retenter un vol dans **${formatDuration(rest)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(`🥷 Discret… Tu pourras retenter un vol dans **${formatDuration(rest)}**.`)]);
     return;
   }
   setCooldown(guildId, uid, "last_rob");
   if (Math.random() < 0.4) {
     const butin = Math.floor(victim.wallet * (0.1 + Math.random() * 0.2));
     if (transferWallet(guildId, target.id, uid, butin)) {
-      await interaction.reply({
-        components: [panel([textBlock(`## 🥷 Vol réussi !\n\nTu as subtilisé **${fmt(guildId, butin)}** à ${target} sans te faire repérer.`)], GREEN)],
-        flags: FLAGS_V2_EPHEMERAL,
-      });
+      await send([panel([textBlock(`## 🥷 Vol réussi !\n\nTu as subtilisé **${fmt(guildId, butin)}** à ${target} sans te faire repérer.`)], GREEN)]);
     } else {
-      await interaction.reply({ components: [errPanel("Le vol a échoué au dernier moment…")], flags: FLAGS_V2_EPHEMERAL });
+      await send([errPanel("Le vol a échoué au dernier moment…")]);
     }
     return;
   }
-  // Échec : amende reversée à la victime
   const me = getUser(guildId, uid);
   const amende = Math.min(me.wallet, Math.max(50, Math.floor(me.wallet * 0.1)));
   if (amende > 0) transferWallet(guildId, uid, target.id, amende);
-  await interaction.reply({
-    components: [panel([textBlock(`## 🚨 Vol raté !\n\n${target} t'a surpris ! Tu lui dois **${fmt(guildId, amende)}** en dédommagement.`)], RED)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([panel([textBlock(`## 🚨 Vol raté !\n\n${target} t'a surpris ! Tu lui dois **${fmt(guildId, amende)}** en dédommagement.`)], RED)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -421,40 +594,28 @@ function takeBet(guildId: string, uid: string, mise: number): boolean {
   return debitWallet(guildId, uid, mise);
 }
 
-async function cmdParier(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const choix = interaction.options.getString("choix", true);
-  const mise = interaction.options.getInteger("mise", true);
+async function doParier(guildId: string, uid: string, choix: string, mise: number, send: Respond): Promise<void> {
   if (!takeBet(guildId, uid, mise)) {
-    await interaction.reply({
-      components: [errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)]);
     return;
   }
   const resultat = Math.random() < 0.5 ? "pile" : "face";
   const gagne = resultat === choix;
   if (gagne) creditWallet(guildId, uid, mise * 2);
   const emoji = resultat === "pile" ? "🪙" : "👑";
-  await interaction.reply({
-    components: [
-      panel(
-        [textBlock(`## ${emoji} ${resultat === "pile" ? "Pile" : "Face"} !\n\n${gagne ? `🎉 Bien vu ! Tu remportes **${fmt(guildId, mise * 2)}**.` : `😞 Raté… Tu perds ta mise de **${fmt(guildId, mise)}**.`}`)],
-        gagne ? GREEN : RED
-      ),
-    ],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([
+    panel(
+      [textBlock(`## ${emoji} ${resultat === "pile" ? "Pile" : "Face"} !\n\n${gagne ? `🎉 Bien vu ! Tu remportes **${fmt(guildId, mise * 2)}**.` : `😞 Raté… Tu perds ta mise de **${fmt(guildId, mise)}**.`}`)],
+      gagne ? GREEN : RED
+    ),
+  ]);
 }
 
 const SLOT_EMOJIS = ["🍒", "🍋", "⭐", "💎", "7️⃣"];
 
-async function cmdSlots(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const mise = interaction.options.getInteger("mise", true);
+async function doSlots(guildId: string, uid: string, mise: number, send: Respond): Promise<void> {
   if (!takeBet(guildId, uid, mise)) {
-    await interaction.reply({
-      components: [errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)]);
     return;
   }
   const spin = () => SLOT_EMOJIS[randInt(0, SLOT_EMOJIS.length - 1)]!;
@@ -470,27 +631,19 @@ async function cmdSlots(interaction: ChatInputCommandInteraction, guildId: strin
     label = "Paire !";
   }
   if (gain > 0) creditWallet(guildId, uid, gain);
-  await interaction.reply({
-    components: [
-      panel(
-        [textBlock(`## 🎰 Machine à sous\n\n# ${r[0]} ${r[1]} ${r[2]}\n\n${gain > 0 ? `🎉 **${label}** — tu gagnes **${fmt(guildId, gain)}** !` : `😞 Perdu… ta mise de **${fmt(guildId, mise)}** s'envole.`}`)],
-        gain > 0 ? GREEN : RED
-      ),
-    ],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([
+    panel(
+      [textBlock(`## 🎰 Machine à sous\n\n# ${r[0]} ${r[1]} ${r[2]}\n\n${gain > 0 ? `🎉 **${label}** — tu gagnes **${fmt(guildId, gain)}** !` : `😞 Perdu… ta mise de **${fmt(guildId, mise)}** s'envole.`}`)],
+      gain > 0 ? GREEN : RED
+    ),
+  ]);
 }
 
 const RED_NUMBERS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
 
-async function cmdRoulette(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const couleur = interaction.options.getString("couleur", true);
-  const mise = interaction.options.getInteger("mise", true);
+async function doRoulette(guildId: string, uid: string, couleur: string, mise: number, send: Respond): Promise<void> {
   if (!takeBet(guildId, uid, mise)) {
-    await interaction.reply({
-      components: [errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)]);
     return;
   }
   const n = randInt(0, 36);
@@ -501,15 +654,12 @@ async function cmdRoulette(interaction: ChatInputCommandInteraction, guildId: st
     gain = couleur === "vert" ? mise * 14 : mise * 2;
   }
   if (gain > 0) creditWallet(guildId, uid, gain);
-  await interaction.reply({
-    components: [
-      panel(
-        [textBlock(`## 🎡 Roulette\n\nLa bille s'arrête sur **${emojiC} ${n}** (${couleurTiree}).\n\n${gain > 0 ? `🎉 Tu avais misé sur **${couleur}** : **${fmt(guildId, gain)}** remportés !` : `😞 Raté… tu avais misé sur **${couleur}**, ta mise de **${fmt(guildId, mise)}** est perdue.`}`)],
-        gain > 0 ? GREEN : RED
-      ),
-    ],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([
+    panel(
+      [textBlock(`## 🎡 Roulette\n\nLa bille s'arrête sur **${emojiC} ${n}** (${couleurTiree}).\n\n${gain > 0 ? `🎉 Tu avais misé sur **${couleur}** : **${fmt(guildId, gain)}** remportés !` : `😞 Raté… tu avais misé sur **${couleur}**, ta mise de **${fmt(guildId, mise)}** est perdue.`}`)],
+      gain > 0 ? GREEN : RED
+    ),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -577,22 +727,19 @@ function bjButtons(disabled = false) {
   );
 }
 
-async function cmdBlackjack(interaction: ChatInputCommandInteraction, guildId: string, uid: string): Promise<void> {
-  const mise = interaction.options.getInteger("mise", true);
+async function doBlackjack(
+  guildId: string,
+  uid: string,
+  mise: number,
+  send: Respond
+): Promise<void> {
   if (!takeBet(guildId, uid, mise)) {
-    await interaction.reply({
-      components: [errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel(!isValidAmount(mise) ? "Mise invalide." : `Solde insuffisant pour miser **${fmt(guildId, mise)}**.`)]);
     return;
   }
   if (getGame<BjState>(guildId, uid, "blackjack")) {
-    // Rembourse la mise : une partie est déjà en cours
     creditWallet(guildId, uid, mise);
-    await interaction.reply({
-      components: [errPanel("Tu as déjà une partie de blackjack en cours. Termine-la d'abord !")],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([errPanel("Tu as déjà une partie de blackjack en cours. Termine-la d'abord !")]);
     return;
   }
   const deck = newDeck();
@@ -602,27 +749,18 @@ async function cmdBlackjack(interaction: ChatInputCommandInteraction, guildId: s
 
   if (dv === 21 && pv !== 21) {
     deleteGame(guildId, uid, "blackjack");
-    await interaction.reply({
-      components: [bjView(guildId, mise, st, false, `😞 Blackjack du croupier… Tu perds **${fmt(guildId, mise)}**.`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([bjView(guildId, mise, st, false, `😞 Blackjack du croupier… Tu perds **${fmt(guildId, mise)}**.`)]);
     return;
   }
   if (pv === 21) {
     const win = Math.floor(mise * 2.5);
     creditWallet(guildId, uid, win);
     deleteGame(guildId, uid, "blackjack");
-    await interaction.reply({
-      components: [bjView(guildId, mise, st, false, `🎉 **BLACKJACK !** Tu remportes **${fmt(guildId, win)}** !`)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+    await send([bjView(guildId, mise, st, false, `🎉 **BLACKJACK !** Tu remportes **${fmt(guildId, win)}** !`)]);
     return;
   }
   saveGame(guildId, uid, "blackjack", mise, st);
-  await interaction.reply({
-    components: [bjView(guildId, mise, st, true, "Tirer une carte ou rester ?"), bjButtons()],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+  await send([bjView(guildId, mise, st, true, "Tirer une carte ou rester ?"), bjButtons()]);
 }
 
 async function bjFinish(
@@ -653,12 +791,10 @@ async function bjFinish(
 }
 
 /** Gère les boutons du blackjack (customId `economie:bj:...`). */
-export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
-  const guildId = guildIdOf(interaction);
-  if (!guildId) return;
+async function handleBjButton(interaction: MessageComponentInteraction, guildId: string): Promise<void> {
   const uid = interaction.user.id;
-  const [, game, action] = interaction.customId.split(":");
-  if (game !== "bj" || !interaction.isButton()) return;
+  const [, , action] = interaction.customId.split(":");
+  if (!interaction.isButton()) return;
 
   const saved = getGame<BjState>(guildId, uid, "blackjack");
   if (!saved) {

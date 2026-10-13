@@ -2,7 +2,8 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1e1f22">
   <title>Mes serveurs — Fusion</title>
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -12,46 +13,39 @@
     <div id="user-chip" class="user-chip" style="display:none;"></div>
   </header>
 
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="nav-section">Navigation</div>
-      <a class="nav-link active" href="/dashboard"><span class="nemoji">🖥️</span> Mes serveurs</a>
-      <a class="nav-link" href="/" id="nav-home"><span class="nemoji">🏠</span> Accueil</a>
-      <div class="nav-section">Bot</div>
-      <div class="nav-link" id="nav-stats-link"><span class="nemoji">📊</span> Statistiques</div>
-    </aside>
-
-    <main class="main">
-      <h1 class="page-title">Choisissez un serveur</h1>
-      <p class="page-sub">Seuls les serveurs où vous avez la permission « Gérer le serveur » et où le bot est présent sont affichés.</p>
-      <div class="grid stats" id="stats" style="display:none;"></div>
-      <div id="content"><div class="spinner">Chargement…</div></div>
-    </main>
+  <div class="wrap">
+    <h1 class="page-title">Mes serveurs</h1>
+    <p class="page-sub">Serveurs où tu as la permission « Gérer le serveur » et où le bot est présent.</p>
+    <div class="stats" id="stats" style="display:none;"></div>
+    <div id="content"></div>
   </div>
-
   <div id="toasts"></div>
 
   <script src="/app.js"></script>
   <script>
     (async () => {
       await loadUserChip();
-      try {
-        const stats = await api("/api/stats");
+      const box = document.getElementById("content");
+      box.innerHTML = skel(4, 76);
+
+      // Stats + serveurs en parallèle
+      const [stats, guilds] = await Promise.all([
+        api("/api/stats").catch(() => null),
+        api("/api/guilds").catch((e) => ({ __err: e.message })),
+      ]);
+
+      if (stats) {
         const el = document.getElementById("stats");
         el.style.display = "";
-        el.innerHTML = `
-          <div class="card stat"><div class="num">${stats.guilds}</div><div class="lbl">🖥️ Serveurs</div></div>
-          <div class="card stat"><div class="num">${stats.members}</div><div class="lbl">👥 Membres</div></div>
-          <div class="card stat"><div class="num">${stats.commands}</div><div class="lbl">⌨️ Commandes</div></div>
-          <div class="card stat"><div class="num">${stats.modules}</div><div class="lbl">🧩 Modules</div></div>`;
-      } catch (e) { /* stats indisponibles */ }
+        el.innerHTML =
+          `<div class="stat"><div class="num">${stats.guilds}</div><div class="lbl">🖥️ Serveurs</div></div>` +
+          `<div class="stat"><div class="num">${stats.members}</div><div class="lbl">👥 Membres</div></div>` +
+          `<div class="stat"><div class="num">${stats.commands}</div><div class="lbl">⌨️ Commandes</div></div>` +
+          `<div class="stat"><div class="num">${stats.modules}</div><div class="lbl">🧩 Modules</div></div>`;
+      }
 
-      const box = document.getElementById("content");
-      let guilds;
-      try {
-        guilds = await api("/api/guilds");
-      } catch (e) {
-        box.innerHTML = `<div class="error-box"><div class="big">😕</div><p>${escapeHtml(e.message)}</p></div>`;
+      if (guilds && guilds.__err) {
+        box.innerHTML = `<div class="err-box"><div class="big">😕</div><p>${esc(guilds.__err)}</p></div>`;
         return;
       }
       if (!guilds || guilds.length === 0) {
@@ -59,19 +53,20 @@
         try {
           const pub = await api("/api/public");
           if (pub && pub.clientId) {
-            invite = `<a class="btn btn-primary" style="margin-top:16px;" target="_blank" rel="noopener"
-              href="https://discord.com/oauth2/authorize?client_id=${pub.clientId}&scope=bot%20applications.commands&permissions=8">➕ Inviter le bot</a>`;
+            invite = `<a class="btn btn-primary btn-block" style="margin-top:16px;" target="_blank" rel="noopener" ` +
+              `href="https://discord.com/oauth2/authorize?client_id=${pub.clientId}&scope=bot%20applications.commands&permissions=8">➕ Inviter le bot</a>`;
           }
-        } catch {}
+        } catch (e) {}
         box.innerHTML = `<div class="empty"><div class="big">🏝️</div>
-          <p><strong>Aucun serveur disponible.</strong><br>Ajoutez le bot sur un serveur où vous avez la permission « Gérer le serveur ».</p>${invite}</div>`;
+          <p><strong>Aucun serveur disponible.</strong><br>Ajoute le bot sur un serveur où tu as la permission « Gérer le serveur ».</p>${invite}</div>`;
         return;
       }
-      box.innerHTML = `<div class="grid guilds">` + guilds.map(g => `
-        <a class="card guild-card" href="/dashboard/${g.id}">
-          ${guildIconHtml(g)}
-          <div><div class="gname" style="font-weight:700;">${escapeHtml(g.name)}</div><div class="gsub" style="color:var(--muted);font-size:0.85rem;">Configurer →</div></div>
-        </a>`).join("") + `</div>`;
+      box.innerHTML = guilds.map(g =>
+        `<a class="guild-row" href="/dashboard/${g.id}">` +
+          guildIconHtml(g) +
+          `<div><div class="gname">${esc(g.name)}</div><div class="gsub">Configurer →</div></div>` +
+          `<span class="chev">›</span></a>`
+      ).join("");
     })();
   </script>
 </body>

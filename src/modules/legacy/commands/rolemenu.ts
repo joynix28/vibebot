@@ -1,7 +1,19 @@
-import { SlashCommandBuilder, PermissionFlagsBits, ButtonStyle } from "discord.js";
+import {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ActionRowBuilder,
+  ModalBuilder,
+  LabelBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from "discord.js";
 import type {
   ChatInputCommandInteraction,
   MessageComponentInteraction,
+  ModalSubmitInteraction,
   GuildMember,
   TextBasedChannel,
 } from "discord.js";
@@ -10,6 +22,7 @@ import {
   FLAGS_V2_EPHEMERAL,
   BLUE,
   GREEN,
+  ACCENT,
   okPanel,
   errPanel,
   panel,
@@ -25,26 +38,7 @@ const MAX_ROLES = 20;
 export const data = new SlashCommandBuilder()
   .setName("rolemenu")
   .setDescription("Crée des menus de rôles à boutons.")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-  .addSubcommand((s) =>
-    s
-      .setName("create")
-      .setDescription("Publie un menu de rôles dans le salon actuel.")
-      .addStringOption((o) => o.setName("label").setDescription("Titre du menu.").setRequired(true).setMaxLength(100))
-      .addStringOption((o) =>
-        o
-          .setName("roles")
-          .setDescription("Rôles : mentions ou IDs séparés par des espaces (max 20).")
-          .setRequired(true)
-      )
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("delete")
-      .setDescription("Supprime un menu de rôles.")
-      .addIntegerOption((o) => o.setName("id").setDescription("ID du menu (voir /rolemenu list).").setRequired(true))
-  )
-  .addSubcommand((s) => s.setName("list").setDescription("Liste les menus de rôles du serveur."));
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
 function buildMenuComponents(menuId: number, label: string, roles: { id: string; name: string }[]): ReturnType<typeof actionRow>[] {
   const rows: ReturnType<typeof actionRow>[] = [];
@@ -61,18 +55,111 @@ function buildMenuComponents(menuId: number, label: string, roles: { id: string;
   return rows;
 }
 
+function hubContainer() {
+  const container = panel([textBlock("## 🎭 Menus de rôles\n*Choisis une action ci-dessous.*")], ACCENT);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("rolemenu:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Créer un menu")
+        .setValue("create")
+        .setDescription("Publie un menu de rôles à boutons.")
+        .setEmoji("➕"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Supprimer un menu")
+        .setValue("delete")
+        .setDescription("Supprime un menu de rôles existant.")
+        .setEmoji("🗑️"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Lister les menus")
+        .setValue("list")
+        .setDescription("Affiche les menus du serveur.")
+        .setEmoji("📋")
+    );
+  container.addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+  return container;
+}
+
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  await interaction.reply({ components: [hubContainer()], flags: FLAGS_V2_EPHEMERAL });
+}
+
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  // Boutons des menus publiés : rolemenu:toggle:<menuId>:<roleId> (logique d'origine conservée).
+  if (interaction.customId.startsWith("rolemenu:toggle:")) {
+    await handleToggle(interaction);
+    return;
+  }
+  if (!interaction.isStringSelectMenu() || interaction.customId !== "rolemenu:menu") return;
   const guild = interaction.guild;
   const channel = interaction.channel;
   if (!guild || !channel?.isTextBased()) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée dans un salon textuel.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const sub = interaction.options.getSubcommand();
+  const action = interaction.values[0];
 
-  if (sub === "create") {
-    const label = interaction.options.getString("label", true);
-    const rawRoles = interaction.options.getString("roles", true);
+  if (action === "create") {
+    const modal = new ModalBuilder().setCustomId("rolemenu:modal:create").setTitle("Créer un menu de rôles");
+    modal.addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Titre du menu")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("label").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)
+        ),
+      new LabelBuilder()
+        .setLabel("Rôles")
+        .setDescription("Mentions ou IDs séparés par des espaces (max 20).")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("roles").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)
+        )
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === "delete") {
+    const modal = new ModalBuilder().setCustomId("rolemenu:modal:delete").setTitle("Supprimer un menu");
+    modal.addLabelComponents(
+      new LabelBuilder()
+        .setLabel("ID du menu")
+        .setDescription("L'ID affiché dans la liste des menus.")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("id").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
+        )
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === "list") {
+    const menus = listRolemenus(guild.id);
+    if (menus.length === 0) {
+      await interaction.update({ components: [errPanel("Aucun menu de rôles.")], flags: FLAGS_V2 });
+      return;
+    }
+    const lines = menus.map((m) => `\`${m.id}\` — **${m.label}** — ${m.roles.length} rôle(s) — <#${m.channel_id}>`).join("\n");
+    await interaction.update({ components: [panel([textBlock(`## 🎭 Menus de rôles\n${lines}`)], BLUE)], flags: FLAGS_V2 });
+    return;
+  }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  const channel = interaction.channel;
+  if (!guild || !channel?.isTextBased()) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée dans un salon textuel.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+
+  if (interaction.customId === "rolemenu:modal:create") {
+    const label = interaction.fields.getTextInputValue("label").trim();
+    const rawRoles = interaction.fields.getTextInputValue("roles");
     const ids = [...new Set(rawRoles.match(/\d{17,20}/g) ?? [])].slice(0, MAX_ROLES);
     if (ids.length === 0) {
       await interaction.reply({ components: [errPanel("Aucun rôle valide trouvé. Mentionne des rôles ou colle leurs IDs.")], flags: FLAGS_V2_EPHEMERAL });
@@ -114,8 +201,12 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  if (sub === "delete") {
-    const id = interaction.options.getInteger("id", true);
+  if (interaction.customId === "rolemenu:modal:delete") {
+    const id = Number(interaction.fields.getTextInputValue("id"));
+    if (!Number.isInteger(id) || id < 1) {
+      await interaction.reply({ components: [errPanel("ID invalide.")], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
     const menu = getRolemenu(id);
     if (!menu || menu.guild_id !== guild.id) {
       await interaction.reply({ components: [errPanel(`Aucun menu avec l'ID \`${id}\`.` )], flags: FLAGS_V2_EPHEMERAL });
@@ -129,19 +220,10 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await interaction.reply({ components: [okPanel(`Menu de rôles \`${id}\` supprimé.`)], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-
-  // list
-  const menus = listRolemenus(guild.id);
-  if (menus.length === 0) {
-    await interaction.reply({ components: [errPanel("Aucun menu de rôles. Utilise `/rolemenu create`.")], flags: FLAGS_V2_EPHEMERAL });
-    return;
-  }
-  const lines = menus.map((m) => `\`${m.id}\` — **${m.label}** — ${m.roles.length} rôle(s) — <#${m.channel_id}>`).join("\n");
-  await interaction.reply({ components: [panel([textBlock(`## 🎭 Menus de rôles\n${lines}`)], BLUE)], flags: FLAGS_V2_EPHEMERAL });
 }
 
-export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
-  // rolemenu:toggle:<menuId>:<roleId>
+/** Boutons « obtenir/retirer le rôle » des menus publiés (logique d'origine). */
+async function handleToggle(interaction: MessageComponentInteraction): Promise<void> {
   const parts = interaction.customId.split(":");
   const menuId = Number(parts[2]);
   const roleId = parts[3];

@@ -2,7 +2,8 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1e1f22">
   <title>Configuration — Fusion</title>
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -12,307 +13,366 @@
     <div id="user-chip" class="user-chip" style="display:none;"></div>
   </header>
 
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="nav-section">Serveur</div>
-      <a class="nav-link" href="/dashboard"><span class="nemoji">←</span> Tous les serveurs</a>
-      <div class="nav-section">Configuration</div>
-      <div class="nav-link active" data-tab="overview"><span class="nemoji">📊</span> Vue d'ensemble</div>
-      <div class="nav-link" data-tab="modules"><span class="nemoji">🧩</span> Modules</div>
-      <div class="nav-link" data-tab="commands"><span class="nemoji">⌨️</span> Commandes</div>
-    </aside>
-
-    <main class="main">
-      <div id="content"><div class="spinner">Chargement…</div></div>
-    </main>
+  <div class="wrap">
+    <a class="back" href="/dashboard">← Mes serveurs</a>
+    <div class="guild-head" id="guild-head"><div class="skel" style="height:56px;width:220px;"></div></div>
+    <div class="tabs" id="tabs" style="display:none;">
+      <button class="tab" data-tab="overview">📊 Vue d'ensemble</button>
+      <button class="tab" data-tab="modules">🧩 Modules</button>
+      <button class="tab" data-tab="commands">⌨️ Commandes</button>
+    </div>
+    <div id="tab-content"></div>
   </div>
 
+  <nav class="bottomnav" id="bottomnav" style="display:none;">
+    <button data-tab="overview"><span class="bi">📊</span>Accueil</button>
+    <button data-tab="modules"><span class="bi">🧩</span>Modules</button>
+    <button data-tab="commands"><span class="bi">⌨️</span>Commandes</button>
+  </nav>
   <div id="toasts"></div>
 
   <script src="/app.js"></script>
   <script>
     const guildId = location.pathname.split("/").filter(Boolean).pop();
-    let guildData = null;
-    let commandsData = null;
-    let currentTab = "overview";
-    let currentModule = null;
-    let cmdFilter = { q: "", module: "all" };
+    let G = null;          // données /api/guild/:id
+    let CMDS = [];         // commandes du bot
+    let tab = "overview";
+    let curModule = null;
+    let cmdQ = "", cmdMod = "all";
 
-    /* ---------- champs de formulaire ---------- */
-    function fieldInput(field, channels, roles) {
-      const key = escapeHtml(field.key);
-      const label = escapeHtml(field.label);
-      const hint = field.hint ? `<div class="hint">${escapeHtml(field.hint)}</div>` : "";
-      const v = field.value;
+    const SECTION_TITLES = {
+      antiraid: "Anti-raid", antispam: "Anti-spam", automod: "Auto-modération",
+      logs: "Salons de logs", ticket: "Tickets", invite: "Arrivées & invitations",
+      tactic: "Tactiques du piège", verify: "Vérification", welcome: "Bienvenue",
+    };
+    const sectionTitle = (k) => SECTION_TITLES[k] || (k ? k.charAt(0).toUpperCase() + k.slice(1) : "");
 
-      if (field.type === "info") {
-        return `<div class="info-box">ℹ️ ${escapeHtml(String(v ?? ""))}</div>`;
-      }
-      if (field.type === "boolean") {
-        const checked = v === true ? "checked" : "";
-        return `<div class="field"><div class="field-row">
-          <div><label class="flabel">${label}</label>${hint}</div>
-          <label class="toggle"><input type="checkbox" data-key="${key}" ${checked}><span class="track"></span></label>
-        </div></div>`;
-      }
-      if (field.type === "number") {
-        return `<div class="field"><label class="flabel">${label}</label>
-          <input type="number" data-key="${key}" value="${v ?? ""}" step="any">${hint}</div>`;
-      }
-      if (field.type === "channel") {
-        const opts = `<option value="">— Aucun —</option>` + channels.map(c =>
-          `<option value="${c.id}" ${String(v) === c.id ? "selected" : ""}>${c.kind === "voice" ? "🔊" : c.kind === "category" ? "📁" : "#"} ${escapeHtml(c.name)}</option>`
-        ).join("");
-        return `<div class="field"><label class="flabel">${label}</label><select data-key="${key}">${opts}</select>${hint}</div>`;
-      }
-      if (field.type === "role") {
-        const opts = `<option value="">— Aucun —</option>` + roles.map(r =>
-          `<option value="${r.id}" ${String(v) === r.id ? "selected" : ""}>${escapeHtml(r.name)}</option>`
-        ).join("");
-        return `<div class="field"><label class="flabel">${label}</label><select data-key="${key}">${opts}</select>${hint}</div>`;
-      }
-      return `<div class="field"><label class="flabel">${label}</label>
-        <input type="text" data-key="${key}" value="${escapeHtml(String(v ?? ""))}">${hint}</div>`;
+    /* ============ onglets ============ */
+    function setTab(t) {
+      tab = t;
+      document.querySelectorAll("#tabs .tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
+      document.querySelectorAll("#bottomnav button").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
+      if (t === "overview") renderOverview();
+      else if (t === "modules") renderModules(curModule ? "config" : "list");
+      else if (t === "commands") renderCommands();
+      window.scrollTo({ top: 0 });
     }
 
-    /* ---------- onglets ---------- */
-    function setTab(tab) {
-      currentTab = tab;
-      document.querySelectorAll(".sidebar .nav-link[data-tab]").forEach(el =>
-        el.classList.toggle("active", el.dataset.tab === tab));
-      document.querySelectorAll(".tab").forEach(el =>
-        el.classList.toggle("active", el.dataset.tab === tab));
-      if (tab === "overview") renderOverview();
-      else if (tab === "modules") renderModules();
-      else if (tab === "commands") renderCommands();
-    }
-
-    function tabsHtml() {
-      return `<div class="tabs">
-        <button class="tab" data-tab="overview">📊 Vue d'ensemble</button>
-        <button class="tab" data-tab="modules">🧩 Modules</button>
-        <button class="tab" data-tab="commands">⌨️ Commandes</button>
-      </div><div id="tab-content"></div>`;
-    }
-
-    /* ---------- vue d'ensemble ---------- */
+    /* ============ vue d'ensemble ============ */
     function renderOverview() {
-      const active = guildData.modules.filter(m => m.enabled).length;
-      document.getElementById("tab-content").innerHTML = `
-        <div class="grid stats">
-          <div class="card stat"><div class="num">${guildData.memberCount}</div><div class="lbl">👥 Membres</div></div>
-          <div class="card stat"><div class="num">${guildData.channelCount}</div><div class="lbl">💬 Salons</div></div>
-          <div class="card stat"><div class="num">${guildData.commandCount}</div><div class="lbl">⌨️ Commandes</div></div>
-          <div class="card stat"><div class="num">${active}/${guildData.modules.length}</div><div class="lbl">🧩 Modules actifs</div></div>
+      const active = G.modules.filter(m => m.enabled).length;
+      document.getElementById("tab-content").innerHTML =
+        `<div class="stats">
+          <div class="stat"><div class="num">${G.memberCount ?? "—"}</div><div class="lbl">👥 Membres</div></div>
+          <div class="stat"><div class="num">${G.channelCount ?? "—"}</div><div class="lbl">💬 Salons</div></div>
+          <div class="stat"><div class="num">${CMDS.length}</div><div class="lbl">⌨️ Commandes</div></div>
+          <div class="stat"><div class="num">${active}/${G.modules.length}</div><div class="lbl">🧩 Modules actifs</div></div>
         </div>
-        <h2 class="page-title" style="font-size:1.25rem;">Modules</h2>
-        <p class="page-sub">Activez ou désactivez les fonctionnalités du bot sur ce serveur.</p>
-        <div class="grid modules">
-          ${guildData.modules.map(m => `
-            <div class="card module-card">
-              <div class="module-head">
-                <span class="memoji">${m.emoji}</span>
-                <div><div class="mname">${escapeHtml(m.name)}</div>
-                <div class="mdesc">${escapeHtml(m.description || "")}</div></div>
+        <h2 class="page-title" style="font-size:1.1rem;">Modules</h2>
+        <p class="page-sub">Active ou coupe les fonctionnalités du bot sur ce serveur.</p>
+        <div class="mod-grid">` +
+          G.modules.map(m =>
+            `<div class="card mod-card" data-open="${m.id}">
+              <div class="mod-emoji">${m.emoji || "📦"}</div>
+              <div class="mod-info"><div class="mod-name">${esc(m.name)}</div>
+              <div class="mod-desc">${esc(m.description || "")}</div></div>
+              <div class="mod-foot">
+                <span class="badge ${m.enabled ? "on" : "off"}">${m.enabled ? "Activé" : "Coupé"}</span>
+                <label class="switch" title="Activer / couper"><input type="checkbox" data-toggle="${m.id}"${m.enabled ? " checked" : ""}><span class="track"></span></label>
               </div>
-              <div class="module-foot">
-                <span class="badge ${m.enabled ? "on" : "off"}">${m.enabled ? "Activé" : "Désactivé"}</span>
-                <label class="toggle" title="Activer / désactiver">
-                  <input type="checkbox" data-toggle="${m.id}" ${m.enabled ? "checked" : ""}><span class="track"></span>
-                </label>
-              </div>
-            </div>`).join("")}
-        </div>`;
-      bindToggles();
+            </div>`
+          ).join("") +
+        `</div>`;
+      document.querySelectorAll("[data-toggle]").forEach(cb =>
+        cb.addEventListener("change", (e) => { e.stopPropagation(); toggleModule(cb.dataset.toggle, cb.checked, cb); }));
+      document.querySelectorAll("[data-open]").forEach(card =>
+        card.addEventListener("click", (e) => {
+          if (e.target.closest(".switch")) return;
+          curModule = card.dataset.open;
+          setTab("modules");
+        }));
     }
 
-    function bindToggles() {
-      document.querySelectorAll("[data-toggle]").forEach(cb => {
-        cb.addEventListener("change", () => toggleModule(cb.dataset.toggle, cb.checked, cb));
-      });
-    }
-
-    async function toggleModule(moduleId, enabled, checkbox) {
+    async function toggleModule(id, enabled, cb) {
       try {
-        await api(`/api/guild/${guildId}/modules/${moduleId}/toggle`, {
-          method: "POST",
-          body: JSON.stringify({ enabled }),
-        });
-        const mod = guildData.modules.find(m => m.id === moduleId);
-        if (mod) mod.enabled = enabled;
-        toast(enabled ? "Module activé ✔" : "Module désactivé", "success");
-        if (currentTab === "overview") renderOverview();
-        if (currentTab === "modules") renderModules();
+        await api(`/api/guild/${guildId}/modules/${id}/toggle`, { method: "POST", body: JSON.stringify({ enabled }) });
+        const m = G.modules.find(x => x.id === id);
+        if (m) m.enabled = enabled;
+        toast(enabled ? "Module activé ✔" : "Module coupé", "success");
+        if (tab === "overview") renderOverview();
+        else renderModules("list");
       } catch (e) {
-        checkbox.checked = !enabled;
+        cb.checked = !enabled;
         toast(e.message, "error");
       }
     }
 
-    /* ---------- modules + config ---------- */
-    function renderModules() {
-      document.getElementById("tab-content").innerHTML = `
-        <div class="grid modules">
-          ${guildData.modules.map(m => `
-            <div class="card module-card" data-module="${m.id}" style="cursor:pointer;">
-              <div class="module-head">
-                <span class="memoji">${m.emoji}</span>
-                <div><div class="mname">${escapeHtml(m.name)}</div>
-                <div class="mdesc">${escapeHtml(m.description || "")}</div></div>
+    /* ============ modules ============ */
+    function renderModules(mode) {
+      const box = document.getElementById("tab-content");
+      if (mode === "config" && curModule) { openConfig(curModule); return; }
+      curModule = null;
+      box.innerHTML =
+        `<p class="page-sub">Touche un module pour régler ses options. Tout est aussi réglable sur Discord via les commandes du bot.</p>
+        <div class="mod-grid">` +
+          G.modules.map(m => {
+            const n = CMDS.filter(c => c.moduleId === m.id).length;
+            return `<div class="card mod-card" data-open="${m.id}">
+              <div class="mod-emoji">${m.emoji || "📦"}</div>
+              <div class="mod-info"><div class="mod-name">${esc(m.name)}</div>
+              <div class="mod-desc">${esc(m.description || "")}</div></div>
+              <div class="mod-foot">
+                <span class="badge ${m.enabled ? "on" : "off"}">${m.enabled ? "Activé" : "Coupé"}</span>
+                <span class="chev">›</span>
               </div>
-              <div class="module-foot">
-                <span class="badge ${m.enabled ? "on" : "off"}">${m.enabled ? "Activé" : "Désactivé"}</span>
-                <button class="btn btn-sm" data-config="${m.id}">⚙️ Configurer</button>
-              </div>
-            </div>`).join("")}
-        </div>
-        <div id="config-zone" style="margin-top:24px;"></div>`;
-      document.querySelectorAll("[data-config]").forEach(btn => {
-        btn.addEventListener("click", (e) => { e.stopPropagation(); openConfig(btn.dataset.config); });
-      });
-      document.querySelectorAll(".module-card[data-module]").forEach(card => {
-        card.addEventListener("click", () => openConfig(card.dataset.module));
-      });
+            </div>`;
+          }).join("") +
+        `</div>`;
+      box.querySelectorAll("[data-open]").forEach(card =>
+        card.addEventListener("click", () => { curModule = card.dataset.open; openConfig(curModule); }));
+    }
+
+    function hubHint(moduleId) {
+      const cmds = CMDS.filter(c => c.moduleId === moduleId);
+      if (!cmds.length) return "";
+      const names = cmds.slice(0, 8).map(c => `<code>/${esc(c.name)}</code>`).join(" ");
+      const more = cmds.length > 8 ? ` <span style="color:var(--muted)">+${cmds.length - 8} autres</span>` : "";
+      return `<div class="hub-hint">💡 Aussi réglable sur Discord avec : ${names}${more}</div>`;
     }
 
     async function openConfig(moduleId) {
-      currentModule = moduleId;
-      const zone = document.getElementById("config-zone");
-      zone.innerHTML = `<div class="spinner">Chargement…</div>`;
-      zone.scrollIntoView({ behavior: "smooth", block: "start" });
+      const box = document.getElementById("tab-content");
+      const meta = G.modules.find(m => m.id === moduleId);
+      box.innerHTML =
+        `<button class="btn btn-sm" id="cfg-back" style="margin-bottom:12px;">← Modules</button>
+         <div id="cfg-zone">${skel(5, 58)}</div>`;
+      document.getElementById("cfg-back").addEventListener("click", () => { curModule = null; renderModules("list"); });
       let schema;
       try {
         schema = await api(`/api/guild/${guildId}/modules/${moduleId}/schema`);
       } catch (e) {
-        zone.innerHTML = `<div class="error-box"><div class="big">😕</div><p>${escapeHtml(e.message)}</p></div>`;
+        document.getElementById("cfg-zone").innerHTML =
+          `<div class="err-box"><div class="big">😕</div><p>${esc(e.message)}</p></div>`;
         return;
       }
-      zone.innerHTML = `<div class="card">
-        <h2 style="margin-bottom:4px;">${escapeHtml(schema.title)}</h2>
-        <p class="page-sub" style="margin-bottom:18px;">Modifiez les réglages puis cliquez sur « Enregistrer ».</p>
-        <div id="fields">${schema.fields.map(f => fieldInput(f, guildData.channels, guildData.roles)).join("")}</div>
-        <div class="save-bar">
-          <button class="btn btn-primary" id="save-btn">💾 Enregistrer</button>
-          <span class="save-ok" id="save-ok">✔ Enregistré</span>
+      const zone = document.getElementById("cfg-zone");
+      zone.innerHTML =
+        `<div class="card">
+          <h2>${(meta && meta.emoji || "🧩")} ${esc(schema.title)}</h2>
+          <p class="page-sub" style="margin:6px 0 14px;">Modifie puis touche « Enregistrer ».</p>
+          ${hubHint(moduleId)}
+          <div id="fields">${fieldsHtml(schema.fields)}</div>
+          <div class="save-bar"><button class="btn btn-primary" id="save-btn">💾 Enregistrer</button><span class="save-ok" id="save-ok">✔ Enregistré</span></div>
+        </div>` +
+        (moduleId === "tickets" ? ticketPreviewCard() : "");
+      bindPreviews(schema.fields);
+      document.getElementById("save-btn").addEventListener("click", saveConfig);
+    }
+
+    /* Exemple visuel d'un panel de tickets */
+    function ticketPreviewCard() {
+      return `<div class="card">
+        <h2>🎫 À quoi ressemble un panel</h2>
+        <p class="page-sub" style="margin:6px 0 14px;">Exemple. Crée tes vrais panels avec <code>/ticket-panel</code> sur Discord.</p>
+        <div class="dmsg">
+          <div class="avatar">🎫</div>
+          <div style="flex:1;min-width:0;">
+            <div class="who"><span class="uname">Fusion</span><span class="bot-tag">Bot</span><span class="time">aujourd'hui à 14:32</span></div>
+            <div class="body"><strong>Besoin d'aide ?</strong><br>Ouvre un ticket et notre équipe te répondra vite.</div>
+            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+              <span style="background:#5865f2;color:#fff;padding:8px 16px;border-radius:4px;font-size:0.85rem;font-weight:600;">📩 Ouvrir un ticket</span>
+              <span style="background:#4e5058;color:#fff;padding:8px 16px;border-radius:4px;font-size:0.85rem;font-weight:600;">❓ Question</span>
+            </div>
+          </div>
         </div>
       </div>`;
-      document.getElementById("save-btn").addEventListener("click", saveConfig);
+    }
+
+    /* ---- rendu des champs ---- */
+    function fieldsHtml(fields) {
+      const infos = fields.filter(f => f.type === "info");
+      const rest = fields.filter(f => f.type !== "info");
+      const groups = [];
+      const seen = {};
+      for (const f of rest) {
+        const dot = f.key.indexOf(".");
+        const gk = dot > 0 ? f.key.slice(0, dot) : "";
+        if (!seen[gk]) { seen[gk] = { key: gk, title: sectionTitle(gk), fields: [] }; groups.push(seen[gk]); }
+        seen[gk].fields.push(f);
+      }
+      let h = infos.map(f => `<div class="info-box">ℹ️ ${esc(String(f.value ?? ""))}</div>`).join("");
+      for (const g of groups) {
+        h += g.title ? `<div class="cfg-section"><h3>${esc(g.title)}</h3>` : `<div class="cfg-section">`;
+        h += g.fields.map(fieldHtml).join("") + `</div>`;
+      }
+      return h;
+    }
+
+    function channelOptions(val) {
+      const kinds = [["text", "Salons textuels", "#"], ["voice", "Salons vocaux", "🔊"], ["category", "Catégories", "📁"]];
+      let h = `<option value="">— Aucun —</option>`;
+      for (const [kind, label, ico] of kinds) {
+        const list = (G.channels || []).filter(c => c.kind === kind);
+        if (!list.length) continue;
+        h += `<optgroup label="${label}">` +
+          list.map(c => `<option value="${c.id}"${String(val) === c.id ? " selected" : ""}>${ico} ${esc(c.name)}</option>`).join("") +
+          `</optgroup>`;
+      }
+      return h;
+    }
+
+    function fieldHtml(f) {
+      const key = esc(f.key), label = esc(f.label);
+      const hint = f.hint ? `<div class="hint">${esc(f.hint)}</div>` : "";
+      const v = f.value;
+      if (f.type === "boolean") {
+        return `<div class="field"><div class="field-row">
+          <div><label class="flabel" for="f-${key}">${label}</label>${hint}</div>
+          <label class="switch"><input type="checkbox" id="f-${key}" data-key="${key}"${v === true ? " checked" : ""}><span class="track"></span></label>
+        </div></div>`;
+      }
+      if (f.type === "number") {
+        return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>
+          <input type="number" id="f-${key}" data-key="${key}" value="${v ?? ""}">${hint}</div>`;
+      }
+      if (f.type === "channel") {
+        return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>
+          <select id="f-${key}" data-key="${key}">${channelOptions(v)}</select>${hint}</div>`;
+      }
+      if (f.type === "role") {
+        const opts = `<option value="">— Aucun —</option>` + (G.roles || []).map(r =>
+          `<option value="${r.id}"${String(v) === r.id ? " selected" : ""}>${esc(r.name)}</option>`).join("");
+        return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>
+          <select id="f-${key}" data-key="${key}">${opts}</select>${hint}</div>`;
+      }
+      // texte : textarea + aperçu si c'est un message
+      const isMsg = /message/i.test(f.key) || /message/i.test(f.label);
+      const input = isMsg
+        ? `<textarea id="f-${key}" data-key="${key}" data-preview="1" placeholder="${esc(f.placeholder || "")}">${esc(String(v ?? ""))}</textarea>`
+        : `<input type="text" id="f-${key}" data-key="${key}" value="${esc(String(v ?? ""))}" placeholder="${esc(f.placeholder || "")}">`;
+      const prev = isMsg
+        ? `<div class="preview-label">👁️ Aperçu dans Discord</div><div id="pv-${key}"></div>` : "";
+      return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>${input}${hint}${prev}</div>`;
+    }
+
+    /* ---- aperçu Discord en direct ---- */
+    function msgPreviewHtml(text) {
+      const vars = { user: "Pseudo", server: G.name, count: "1 234", inviter: "Ami", member: "Nouveau" };
+      let h = esc(text).replace(/\{(\w+)\}/g, (m, k) =>
+        `<span class="mention">@${esc(vars[k] !== undefined ? vars[k] : k)}</span>`);
+      h = h.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+      const body = h.trim() ? h : `<span style="color:var(--muted)">Écris ton message ci-dessus pour voir l'aperçu…</span>`;
+      return `<div class="dmsg"><div class="avatar">F</div><div style="flex:1;min-width:0;">
+        <div class="who"><span class="uname">Fusion</span><span class="bot-tag">Bot</span><span class="time">aujourd'hui à 14:32</span></div>
+        <div class="body">${body}</div></div></div>`;
+    }
+
+    function bindPreviews(fields) {
+      document.querySelectorAll("[data-preview]").forEach(el => {
+        const pv = document.getElementById("pv-" + el.dataset.key);
+        if (!pv) return;
+        const upd = () => { pv.innerHTML = msgPreviewHtml(el.value); };
+        el.addEventListener("input", upd);
+        upd();
+      });
     }
 
     async function saveConfig() {
       const values = {};
-      document.querySelectorAll("#fields [data-key]").forEach(input => {
-        const k = input.dataset.key;
-        if (k === "info") return;
-        if (input.type === "checkbox") values[k] = input.checked;
-        else if (input.type === "number") values[k] = input.value === "" ? 0 : Number(input.value);
-        else values[k] = input.value;
+      document.querySelectorAll("#fields [data-key]").forEach(el => {
+        const k = el.dataset.key;
+        if (el.type === "checkbox") values[k] = el.checked;
+        else if (el.type === "number") values[k] = el.value === "" ? 0 : Number(el.value);
+        else values[k] = el.value;
       });
+      const btn = document.getElementById("save-btn");
+      btn.disabled = true;
       try {
-        await api(`/api/guild/${guildId}/modules/${currentModule}/config`, {
-          method: "POST",
-          body: JSON.stringify({ values }),
-        });
+        await api(`/api/guild/${guildId}/modules/${curModule}/config`, { method: "POST", body: JSON.stringify({ values }) });
         const ok = document.getElementById("save-ok");
         if (ok) { ok.style.display = "inline"; setTimeout(() => ok.style.display = "none", 2500); }
-        toast("Configuration enregistrée ✔", "success");
+        toast("Enregistré ✔", "success");
       } catch (e) {
         toast(e.message, "error");
+      } finally {
+        btn.disabled = false;
       }
     }
 
-    /* ---------- explorateur de commandes ---------- */
-    async function renderCommands() {
-      const zone = document.getElementById("tab-content");
-      if (!commandsData) {
-        zone.innerHTML = `<div class="spinner">Chargement…</div>`;
-        try {
-          commandsData = await api(`/api/guild/${guildId}/commands`);
-        } catch (e) {
-          zone.innerHTML = `<div class="error-box"><div class="big">😕</div><p>${escapeHtml(e.message)}</p></div>`;
-          return;
-        }
-      }
-      const mods = [...new Set(commandsData.map(c => c.moduleId))].map(id => {
-        const m = guildData.modules.find(x => x.id === id);
+    /* ============ commandes ============ */
+    function renderCommands() {
+      const box = document.getElementById("tab-content");
+      const mods = [...new Set(CMDS.map(c => c.moduleId))].map(id => {
+        const m = (G.modules || []).find(x => x.id === id);
         return { id, name: m ? m.name : id, emoji: m ? m.emoji : "📦" };
       });
-      zone.innerHTML = `
-        <div class="searchbar">
-          <input type="text" id="cmd-search" placeholder="🔍 Rechercher une commande… (ex: ban, play, ticket)" value="${escapeHtml(cmdFilter.q)}">
-        </div>
+      box.innerHTML =
+        `<div class="searchbar"><input type="text" id="cmd-q" placeholder="🔍 Rechercher… (ex : ticket, musique, ban)" value="${esc(cmdQ)}"></div>
         <div class="chips" id="cmd-chips">
-          <span class="chip ${cmdFilter.module === "all" ? "active" : ""}" data-m="all">Tous</span>
-          ${mods.map(m => `<span class="chip ${cmdFilter.module === m.id ? "active" : ""}" data-m="${m.id}">${m.emoji} ${escapeHtml(m.name)}</span>`).join("")}
+          <span class="chip${cmdMod === "all" ? " active" : ""}" data-m="all">Tous</span>
+          ${mods.map(m => `<span class="chip${cmdMod === m.id ? " active" : ""}" data-m="${m.id}">${m.emoji} ${esc(m.name)}</span>`).join("")}
         </div>
+        <p class="page-sub" style="margin-bottom:12px;">Chaque commande ouvre un menu interactif sur Discord : choisis une action, remplis si besoin, c'est tout.</p>
         <div id="cmd-list"></div>`;
-      document.getElementById("cmd-search").addEventListener("input", (e) => {
-        cmdFilter.q = e.target.value;
-        renderCmdList();
-      });
-      document.querySelectorAll("#cmd-chips .chip").forEach(ch => {
+      document.getElementById("cmd-q").addEventListener("input", (e) => { cmdQ = e.target.value; renderCmdList(); });
+      box.querySelectorAll("#cmd-chips .chip").forEach(ch =>
         ch.addEventListener("click", () => {
-          cmdFilter.module = ch.dataset.m;
-          document.querySelectorAll("#cmd-chips .chip").forEach(x => x.classList.toggle("active", x === ch));
+          cmdMod = ch.dataset.m;
+          box.querySelectorAll("#cmd-chips .chip").forEach(x => x.classList.toggle("active", x === ch));
           renderCmdList();
-        });
-      });
+        }));
       renderCmdList();
     }
 
     function renderCmdList() {
-      const q = cmdFilter.q.trim().toLowerCase();
-      const list = commandsData.filter(c =>
-        (cmdFilter.module === "all" || c.moduleId === cmdFilter.module) &&
-        (!q || c.name.toLowerCase().includes(q) || (c.description || "").toLowerCase().includes(q))
-      );
-      const groups = {};
-      for (const c of list) {
-        (groups[c.moduleId] = groups[c.moduleId] || []).push(c);
-      }
+      const q = cmdQ.trim().toLowerCase();
+      const list = CMDS.filter(c =>
+        (cmdMod === "all" || c.moduleId === cmdMod) &&
+        (!q || c.name.toLowerCase().includes(q) || (c.description || "").toLowerCase().includes(q)));
       const box = document.getElementById("cmd-list");
-      if (list.length === 0) {
+      if (!list.length) {
         box.innerHTML = `<div class="empty"><div class="big">🔍</div><p>Aucune commande trouvée.</p></div>`;
         return;
       }
+      const groups = {};
+      for (const c of list) (groups[c.moduleId] = groups[c.moduleId] || []).push(c);
       box.innerHTML = Object.entries(groups).map(([mid, cmds]) => {
-        const m = guildData.modules.find(x => x.id === mid);
-        const title = m ? `${m.emoji} ${escapeHtml(m.name)}` : escapeHtml(mid);
+        const m = (G.modules || []).find(x => x.id === mid);
+        const title = m ? `${m.emoji} ${esc(m.name)}` : esc(mid);
         return `<div class="cmd-group"><h3>${title} <span class="count">${cmds.length}</span></h3>` +
-          cmds.map(c => `<div class="cmd"><span class="cname">/${escapeHtml(c.name)}</span><span class="cdesc">${escapeHtml(c.description || "")}</span></div>`).join("") +
+          cmds.map(c => `<div class="cmd"><span class="cname">/${esc(c.name)}</span><span class="cdesc">${esc(c.description || "")}</span></div>`).join("") +
           `</div>`;
       }).join("");
     }
 
-    /* ---------- init ---------- */
+    /* ============ init ============ */
     (async () => {
-      await loadUserChip();
-      const box = document.getElementById("content");
-      try {
-        guildData = await api("/api/guild/" + guildId);
-      } catch (e) {
-        box.innerHTML = `<div class="error-box"><div class="big">🔒</div>
-          <h2>Accès impossible</h2><p>${escapeHtml(e.message)}</p>
-          <a class="btn btn-primary" href="/dashboard">← Retour aux serveurs</a></div>`;
+      document.getElementById("tab-content").innerHTML = skel(4, 72);
+      const chipP = loadUserChip();
+      const [gRes, cRes] = await Promise.all([
+        api("/api/guild/" + guildId).catch(e => ({ __err: e.message })),
+        api(`/api/guild/${guildId}/commands`).catch(() => []),
+      ]);
+      await chipP;
+      if (gRes && gRes.__err) {
+        document.getElementById("tab-content").innerHTML =
+          `<div class="err-box"><div class="big">🔒</div><h2>Accès impossible</h2>
+           <p style="color:var(--muted);margin:8px 0 16px;">${esc(gRes.__err)}</p>
+           <a class="btn btn-primary" href="/dashboard">← Mes serveurs</a></div>`;
         return;
       }
-      document.title = guildData.name + " — Fusion";
-
-      box.innerHTML = `
-        <div class="guild-header">
-          ${guildIconHtml(guildData)}
-          <div>
-            <a class="back" href="/dashboard">← Tous les serveurs</a>
-            <h1 class="page-title" style="margin:0;">${escapeHtml(guildData.name)}</h1>
-          </div>
-        </div>
-        ${tabsHtml()}`;
-
-      document.querySelectorAll(".tab").forEach(el =>
-        el.addEventListener("click", () => setTab(el.dataset.tab)));
-      document.querySelectorAll('.sidebar .nav-link[data-tab]').forEach(el =>
-        el.addEventListener("click", () => setTab(el.dataset.tab)));
-
+      G = gRes;
+      CMDS = Array.isArray(cRes) ? cRes : [];
+      document.title = G.name + " — Fusion";
+      document.getElementById("guild-head").innerHTML =
+        guildIconHtml(G) +
+        `<div><h1 class="page-title" style="margin:0;">${esc(G.name)}</h1>
+         <div class="page-sub" style="margin:0;">${G.memberCount ?? "—"} membres · ${CMDS.length} commandes</div></div>`;
+      document.getElementById("tabs").style.display = "";
+      const bn = document.getElementById("bottomnav");
+      bn.style.display = "";
+      document.querySelectorAll("#tabs .tab").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+      bn.querySelectorAll("button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
       setTab("overview");
     })();
   </script>

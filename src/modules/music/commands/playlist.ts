@@ -1,5 +1,21 @@
-import { SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import {
+  ContainerBuilder,
+  TextDisplayBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ModalBuilder,
+  LabelBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ButtonBuilder,
+  ButtonStyle,
+} from "discord.js";
+import type {
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+  StringSelectMenuInteraction,
+} from "discord.js";
 import { FLAGS_V2, FLAGS_V2_EPHEMERAL, okPanel, errPanel, msgPanel, BLUE } from "../../../core/ui.ts";
 import { ensureQueue, canControl, getQueue } from "../func/player.ts";
 import {
@@ -12,65 +28,147 @@ import {
 } from "../func/db.ts";
 import type { PlaylistTrack } from "../func/db.ts";
 
-export const data = new SlashCommandBuilder()
-  .setName("playlist")
-  .setDescription("Gère les playlists sauvegardées du serveur.")
-  .addSubcommand((s) =>
-    s
-      .setName("charger")
-      .setDescription("Charge une playlist dans la file d'attente.")
-      .addStringOption((o) => o.setName("nom").setDescription("Nom de la playlist.").setRequired(true).setMaxLength(50))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("sauvegarder")
-      .setDescription("Sauvegarde la file d'attente actuelle en playlist.")
-      .addStringOption((o) => o.setName("nom").setDescription("Nom de la playlist.").setRequired(true).setMaxLength(50))
-  )
-  .addSubcommand((s) => s.setName("liste").setDescription("Affiche les playlists sauvegardées."))
-  .addSubcommand((s) =>
-    s
-      .setName("supprimer")
-      .setDescription("Supprime une playlist sauvegardée.")
-      .addStringOption((o) => o.setName("nom").setDescription("Nom de la playlist.").setRequired(true).setMaxLength(50))
-  );
+/** Fonction de réponse unifiée. */
+type Respond = (components: ContainerBuilder[], flags?: number) => Promise<unknown>;
 
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const guild = interaction.guild;
-  if (!guild) {
-    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+// ---------------------------------------------------------------------------
+// Définition de la commande (hub sans sous-commandes)
+// ---------------------------------------------------------------------------
+
+const MENU_OPTIONS: { value: string; label: string; emoji: string; description: string; modal: boolean }[] = [
+  { value: "charger", label: "Charger", emoji: "📥", description: "Charge une playlist dans la file", modal: true },
+  { value: "sauvegarder", label: "Sauvegarder", emoji: "💾", description: "Sauvegarde la file actuelle", modal: true },
+  { value: "liste", label: "Liste", emoji: "📃", description: "Voir les playlists du serveur", modal: false },
+  { value: "supprimer", label: "Supprimer", emoji: "🗑️", description: "Supprime une playlist", modal: true },
+];
+
+const DJ_ONLY = new Set(["sauvegarder", "supprimer"]);
+
+export function playlistHubMenu(): ContainerBuilder {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("musique:plmenu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      MENU_OPTIONS.map((o) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(o.label)
+          .setValue(o.value)
+          .setEmoji(o.emoji)
+          .setDescription(o.description)
+      )
+    );
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  const backRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("musique:back").setLabel("Retour").setStyle(ButtonStyle.Secondary).setEmoji("◀️")
+  );
+  return new ContainerBuilder()
+    .setAccentColor(BLUE)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("## 📃 Playlists\nChoisis une action dans le menu ci-dessous 👇")
+    )
+    .addActionRowComponents(row)
+    .addActionRowComponents(backRow as unknown as ActionRowBuilder<StringSelectMenuBuilder>);
+}
+
+// ---------------------------------------------------------------------------
+// Modals
+// ---------------------------------------------------------------------------
+
+function modalFor(action: string): ModalBuilder | null {
+  const base = (title: string) => new ModalBuilder().setCustomId(`musique:modal:pl-${action}`).setTitle(title);
+  const nameField = new LabelBuilder()
+    .setLabel("Nom de la playlist")
+    .setTextInputComponent(
+      new TextInputBuilder()
+        .setCustomId("nom")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(50)
+        .setPlaceholder("Ex : soirée")
+    );
+  switch (action) {
+    case "charger":
+      return base("📥 Charger une playlist").addLabelComponents(nameField);
+    case "sauvegarder":
+      return base("💾 Sauvegarder la file").addLabelComponents(nameField);
+    case "supprimer":
+      return base("🗑️ Supprimer une playlist").addLabelComponents(nameField);
+    default:
+      return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleComponent
+// ---------------------------------------------------------------------------
+
+export async function handlePlaylistComponent(interaction: MessageComponentInteraction): Promise<void> {
+  if (!interaction.guild) return;
+  if (interaction.customId !== "musique:plmenu" || !interaction.isStringSelectMenu()) return;
+
+  const action = interaction.values[0] ?? "";
+
+  if (action === "liste") {
+    await interaction.deferUpdate();
+    await doListe(interaction.guild.id, (components, flags = FLAGS_V2_EPHEMERAL) =>
+      interaction.followUp({ components, flags })
+    );
     return;
   }
-  const sub = interaction.options.getSubcommand();
 
-  if (sub === "liste") {
-    const lists = listPlaylists(guild.id);
-    if (lists.length === 0) {
-      await interaction.reply({
-        components: [msgPanel("📃 Aucune playlist sauvegardée.\nUtilise `/playlist sauvegarder` pour en créer une.", BLUE)],
-        flags: FLAGS_V2,
-      });
+  // DJ requis pour sauvegarder / supprimer (vérifié avant d'ouvrir le modal).
+  if (DJ_ONLY.has(action) && !canControl(interaction)) {
+    await interaction.reply({ components: [errPanel("Seul un DJ peut faire ça.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+
+  const modal = modalFor(action);
+  if (modal) await (interaction as StringSelectMenuInteraction).showModal(modal);
+}
+
+// ---------------------------------------------------------------------------
+// handleModal
+// ---------------------------------------------------------------------------
+
+export async function handlePlaylistModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const guildId = guild.id;
+  const parts = interaction.customId.split(":"); // musique:modal:pl-<action>
+  if (parts[1] !== "modal") return;
+  const action = (parts[2] ?? "").replace(/^pl-/, "");
+
+  // Défense en profondeur : re-vérifie le rôle DJ (déjà contrôlé avant le modal).
+  if (DJ_ONLY.has(action) && !canControl(interaction as unknown as MessageComponentInteraction)) {
+    await interaction.reply({ components: [errPanel("Seul un DJ peut faire ça.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+
+  const send: Respond = (components, flags = FLAGS_V2_EPHEMERAL) =>
+    interaction.reply({ components, flags });
+  const field = (name: string): string => {
+    try {
+      return interaction.fields.getTextInputValue(name);
+    } catch {
+      return "";
+    }
+  };
+  const name = sanitizePlaylistName(field("nom"));
+
+  if (action === "charger") {
+    if (!name) {
+      await send([errPanel("Indique le nom de la playlist.")]);
       return;
     }
-    const lines = lists
-      .map((p) => `🎵 **${p.name}** — ${p.tracks.length} morceau${p.tracks.length > 1 ? "x" : ""} (par <@${p.created_by}>)`)
-      .join("\n");
-    await interaction.reply({ components: [msgPanel(`## 📃 Playlists du serveur\n\n${lines}`, BLUE)], flags: FLAGS_V2 });
-    return;
-  }
-
-  const name = sanitizePlaylistName(interaction.options.getString("nom", true));
-
-  if (sub === "charger") {
-    const pl = getPlaylist(guild.id, name);
+    const pl = getPlaylist(guildId, name);
     if (!pl || pl.tracks.length === 0) {
-      await interaction.reply({ components: [errPanel(`Playlist **${name}** introuvable ou vide.`)], flags: FLAGS_V2_EPHEMERAL });
+      await send([errPanel(`Playlist **${name}** introuvable ou vide.`)]);
       return;
     }
     await interaction.deferReply({ flags: FLAGS_V2 });
-    const joined = await ensureQueue(interaction);
+    const joined = await ensureQueue(interaction as unknown as MessageComponentInteraction);
     if ("error" in joined) {
-      await interaction.editReply({ components: [errPanel(joined.error)], flags: FLAGS_V2 });
+      await interaction.editReply({ components: [errPanel(joined.error)] });
       return;
     }
     const songs = pl.tracks.map((t: PlaylistTrack) => ({
@@ -82,48 +180,59 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await joined.queue.addSongs(songs);
     await interaction.editReply({
       components: [okPanel(`📃 Playlist **${pl.name}** chargée : ${songs.length} morceaux ajoutés à la file.`)],
-      flags: FLAGS_V2,
     });
     return;
   }
 
-  if (sub === "sauvegarder") {
-    if (!canControl(interaction)) {
-      await interaction.reply({ components: [errPanel("Seul un DJ peut sauvegarder une playlist.")], flags: FLAGS_V2_EPHEMERAL });
+  if (action === "sauvegarder") {
+    if (!name) {
+      await send([errPanel("Indique un nom pour la playlist.")]);
       return;
     }
-    const queue = getQueue(guild.id);
+    const queue = getQueue(guildId);
     const tracks: PlaylistTrack[] = [];
     const np = queue?.nowPlaying();
     if (np) tracks.push({ title: np.song.title, url: np.song.url, duration: np.song.duration });
     for (const s of queue?.upcoming ?? []) tracks.push({ title: s.title, url: s.url, duration: s.duration });
     if (tracks.length === 0) {
-      await interaction.reply({ components: [errPanel("La file d'attente est vide, rien à sauvegarder.")], flags: FLAGS_V2_EPHEMERAL });
+      await send([errPanel("La file d'attente est vide, rien à sauvegarder.")]);
       return;
     }
-    if (playlistExists(guild.id, name)) {
-      await interaction.reply({
-        components: [errPanel(`Une playlist nommée **${name}** existe déjà. Supprime-la d'abord (` + "`/playlist supprimer`" + ").")],
-        flags: FLAGS_V2_EPHEMERAL,
-      });
+    if (playlistExists(guildId, name)) {
+      await send([errPanel(`Une playlist nommée **${name}** existe déjà. Supprime-la d'abord via le menu « Supprimer ».`)]);
       return;
     }
-    createPlaylist(guild.id, name, tracks, interaction.user.id);
-    await interaction.reply({
-      components: [okPanel(`💾 Playlist **${name}** sauvegardée (${tracks.length} morceaux).`)],
-      flags: FLAGS_V2,
-    });
+    createPlaylist(guildId, name, tracks, interaction.user.id);
+    await send([okPanel(`💾 Playlist **${name}** sauvegardée (${tracks.length} morceaux).`)], FLAGS_V2);
     return;
   }
 
-  // supprimer
-  if (!canControl(interaction)) {
-    await interaction.reply({ components: [errPanel("Seul un DJ peut supprimer une playlist.")], flags: FLAGS_V2_EPHEMERAL });
+  if (action === "supprimer") {
+    if (!name) {
+      await send([errPanel("Indique le nom de la playlist.")]);
+      return;
+    }
+    const deleted = deletePlaylist(guildId, name);
+    await send([deleted ? okPanel(`🗑️ Playlist **${name}** supprimée.`) : errPanel(`Playlist **${name}** introuvable.`)]);
     return;
   }
-  const deleted = deletePlaylist(guild.id, name);
-  await interaction.reply({
-    components: [deleted ? okPanel(`🗑️ Playlist **${name}** supprimée.`) : errPanel(`Playlist **${name}** introuvable.`)],
-    flags: FLAGS_V2_EPHEMERAL,
-  });
+}
+
+// ---------------------------------------------------------------------------
+// Logique métier
+// ---------------------------------------------------------------------------
+
+async function doListe(guildId: string, send: Respond): Promise<void> {
+  const lists = listPlaylists(guildId);
+  if (lists.length === 0) {
+    await send(
+      [msgPanel("📃 Aucune playlist sauvegardée.\nUtilise le menu « Sauvegarder » pour en créer une.", BLUE)],
+      FLAGS_V2
+    );
+    return;
+  }
+  const lines = lists
+    .map((p) => `🎵 **${p.name}** — ${p.tracks.length} morceau${p.tracks.length > 1 ? "x" : ""} (par <@${p.created_by}>)`)
+    .join("\n");
+  await send([msgPanel(`## 📃 Playlists du serveur\n\n${lines}`, BLUE)], FLAGS_V2);
 }

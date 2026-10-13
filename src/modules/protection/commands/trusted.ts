@@ -1,15 +1,20 @@
 import {
   ActionRowBuilder,
   ButtonStyle,
+  ModalBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   UserSelectMenuBuilder,
 } from "discord.js";
 import type {
   ChatInputCommandInteraction,
   Guild,
   MessageComponentInteraction,
+  ModalSubmitInteraction,
   User,
 } from "discord.js";
 import {
@@ -28,24 +33,65 @@ import { BLURPLE, needGuild, replyErr } from "./_shared.ts";
 export const data = new SlashCommandBuilder()
   .setName("trusted")
   .setDescription("Gérer la liste blanche du serveur (ignorée par l'anti-raid).")
-  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-  .addSubcommand((s) =>
-    s
-      .setName("ajouter")
-      .setDescription("Ajouter un utilisateur à la liste blanche.")
-      .addUserOption((o) => o.setName("utilisateur").setDescription("Utilisateur à ajouter.").setRequired(true))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("retirer")
-      .setDescription("Retirer un utilisateur de la liste blanche.")
-      .addUserOption((o) => o.setName("utilisateur").setDescription("Utilisateur à retirer.").setRequired(true))
-  )
-  .addSubcommand((s) => s.setName("liste").setDescription("Afficher la liste blanche."));
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const CMD = "trusted";
 
-function canManage(guild: Guild, interaction: ChatInputCommandInteraction | MessageComponentInteraction): boolean {
+const HUB_OPTIONS = [
+  { label: "Voir la liste", value: "liste", emoji: "📋", description: "Afficher la liste blanche" },
+  { label: "Ajouter", value: "ajouter", emoji: "➕", description: "Ajouter un utilisateur" },
+  { label: "Retirer", value: "retirer", emoji: "➖", description: "Retirer un utilisateur" },
+];
+
+function menuRow() {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${CMD}:menu`)
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      HUB_OPTIONS.map((o) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(o.label)
+          .setValue(o.value)
+          .setDescription(o.description)
+          .setEmoji(o.emoji)
+      )
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function hubPayload(guild: Guild) {
+  const body = panel(
+    [textBlock(`# 🤝 Liste blanche\nGère les utilisateurs ignorés par l'anti-raid sur **${guild.name}**.`)],
+    BLURPLE
+  );
+  return { components: [body, menuRow()], flags: FLAGS_V2_EPHEMERAL };
+}
+
+/** Extrait un ID utilisateur depuis une mention ou un ID brut. */
+function parseUserId(raw: string): string | null {
+  const m = raw.trim().match(/^(?:<@!?(\d+)>|(\d{15,20}))$/);
+  return m?.[1] ?? m?.[2] ?? null;
+}
+
+function userModal(action: "ajouter" | "retirer") {
+  const modal = new ModalBuilder()
+    .setCustomId(`${CMD}:modal:${action}`)
+    .setTitle(action === "ajouter" ? "Ajouter à la liste blanche" : "Retirer de la liste blanche");
+  modal.addComponents(
+    new ActionRowBuilder<TextInputBuilder>().addComponents(
+      new TextInputBuilder()
+        .setCustomId("user")
+        .setLabel("Utilisateur (mention ou ID)")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(40)
+        .setPlaceholder("@utilisateur ou 123456789")
+    )
+  );
+  return modal;
+}
+
+function canManage(guild: Guild, interaction: ChatInputCommandInteraction | MessageComponentInteraction | ModalSubmitInteraction): boolean {
   if (guild.ownerId === interaction.user.id) return true;
   const perms = interaction.memberPermissions;
   return perms?.has(PermissionFlagsBits.Administrator) ?? false;
@@ -101,6 +147,52 @@ async function listPayload(
   return { components: [body, row], flags: FLAGS_V2 };
 }
 
+async function doAdd(
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
+  guild: Guild,
+  userId: string
+): Promise<void> {
+  if (userId === guild.ownerId) {
+    await replyErr(interaction, "❌ Le propriétaire du serveur est déjà implicitement dans la liste blanche.");
+    return;
+  }
+  const user = await interaction.client.users.fetch(userId).catch(() => null);
+  const before = getWhitelist(guild.id);
+  if (before.includes(userId)) {
+    await interaction.reply({
+      components: [msgPanel(`ℹ️ ${user ?? `<@${userId}>`} est déjà dans la liste blanche.`, BLURPLE)],
+      flags: FLAGS_V2_EPHEMERAL,
+    });
+    return;
+  }
+  addWhitelist(guild.id, userId);
+  await interaction.reply({
+    components: [msgPanel(`✅ ${user ?? `<@${userId}>`} a été ajouté à la liste blanche.`, BLURPLE)],
+    flags: FLAGS_V2,
+  });
+}
+
+async function doRemove(
+  interaction: ChatInputCommandInteraction | ModalSubmitInteraction,
+  guild: Guild,
+  userId: string
+): Promise<void> {
+  const user = await interaction.client.users.fetch(userId).catch(() => null);
+  const wl = getWhitelist(guild.id);
+  if (!wl.includes(userId)) {
+    await interaction.reply({
+      components: [msgPanel(`ℹ️ ${user ?? `<@${userId}>`} n'est pas dans la liste blanche.`, BLURPLE)],
+      flags: FLAGS_V2_EPHEMERAL,
+    });
+    return;
+  }
+  removeWhitelist(guild.id, userId);
+  await interaction.reply({
+    components: [msgPanel(`✅ ${user ?? `<@${userId}>`} a été retiré de la liste blanche.`, BLURPLE)],
+    flags: FLAGS_V2,
+  });
+}
+
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guild = await needGuild(interaction);
   if (!guild) return;
@@ -108,49 +200,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await replyErr(interaction, "❌ Vous devez être le propriétaire du serveur ou administrateur.");
     return;
   }
-  const sub = interaction.options.getSubcommand();
-
-  if (sub === "liste") {
-    await interaction.reply(await listPayload(interaction, guild));
-    return;
-  }
-
-  const user = interaction.options.getUser("utilisateur", true);
-  if (sub === "ajouter") {
-    if (user.id === guild.ownerId) {
-      await replyErr(interaction, "❌ Le propriétaire du serveur est déjà implicitement dans la liste blanche.");
-      return;
-    }
-    const before = getWhitelist(guild.id);
-    if (before.includes(user.id)) {
-      await interaction.reply({
-        components: [msgPanel(`ℹ️ ${user} est déjà dans la liste blanche.`, BLURPLE)],
-        flags: FLAGS_V2_EPHEMERAL,
-      });
-      return;
-    }
-    addWhitelist(guild.id, user.id);
-    await interaction.reply({
-      components: [msgPanel(`✅ ${user} a été ajouté à la liste blanche.`, BLURPLE)],
-      flags: FLAGS_V2,
-    });
-    return;
-  }
-
-  // retirer
-  const wl = getWhitelist(guild.id);
-  if (!wl.includes(user.id)) {
-    await interaction.reply({
-      components: [msgPanel(`ℹ️ ${user} n'est pas dans la liste blanche.`, BLURPLE)],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
-    return;
-  }
-  removeWhitelist(guild.id, user.id);
-  await interaction.reply({
-    components: [msgPanel(`✅ ${user} a été retiré de la liste blanche.`, BLURPLE)],
-    flags: FLAGS_V2,
-  });
+  await interaction.reply({ ...hubPayload(guild), flags: FLAGS_V2_EPHEMERAL });
 }
 
 export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
@@ -163,6 +213,19 @@ export async function handleComponent(interaction: MessageComponentInteraction):
     return;
   }
   const action = parts[1];
+
+  if (action === "menu" && interaction.isStringSelectMenu()) {
+    const choice = interaction.values[0];
+    if (choice === "liste") {
+      await interaction.update(await listPayload(interaction, guild));
+      return;
+    }
+    if (choice === "ajouter" || choice === "retirer") {
+      await interaction.showModal(userModal(choice));
+      return;
+    }
+    return;
+  }
 
   if (action === "add" && interaction.isButton()) {
     const select = new UserSelectMenuBuilder()
@@ -238,6 +301,31 @@ export async function handleComponent(interaction: MessageComponentInteraction):
       components: [msgPanel(`✅ ${interaction.values.length} utilisateur(s) retiré(s) de la liste blanche.`, BLURPLE)],
       flags: FLAGS_V2_EPHEMERAL,
     });
+    return;
+  }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const parts = interaction.customId.split(":");
+  if (parts[0] !== CMD || parts[1] !== "modal") return;
+  if (!canManage(guild, interaction)) {
+    await replyErr(interaction, "❌ Vous devez être le propriétaire du serveur ou administrateur.");
+    return;
+  }
+  const action = parts[2];
+  const userId = parseUserId(interaction.fields.getTextInputValue("user"));
+  if (!userId) {
+    await replyErr(interaction, "❌ Utilisateur invalide : mentionne l'utilisateur ou colle son ID.");
+    return;
+  }
+  if (action === "ajouter") {
+    await doAdd(interaction, guild, userId);
+    return;
+  }
+  if (action === "retirer") {
+    await doRemove(interaction, guild, userId);
     return;
   }
 }

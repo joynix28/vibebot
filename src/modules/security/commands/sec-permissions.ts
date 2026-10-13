@@ -1,91 +1,244 @@
-import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
-import { panel, textBlock, msgPanel, FLAGS_V2 } from "../func/ui.ts";
-import { permChoices, permName } from "../func/perm.ts";
+import {
+  ActionRowBuilder,
+  ModalBuilder,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  Guild,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+} from "discord.js";
+import { panel, textBlock, msgPanel, FLAGS_V2, FLAGS_V2_EPHEMERAL } from "../func/ui.ts";
+import { PERMS, permName } from "../func/perm.ts";
 import { addPerm, removePerm, resetPerms, getPerms, usersWithPerm } from "../func/db.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("sec-permissions")
-  .setDescription("Manage who can access the moderation commands")
-  .addSubcommand((s) =>
-    s.setName("view_user").setDescription("Get granted permissions of a user").addUserOption((o) => o.setName("user").setDescription("User to check").setRequired(true))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("add")
-      .setDescription("Add some permission to a user")
-      .addUserOption((o) => o.setName("user").setDescription("User to get the permission").setRequired(true))
-      .addIntegerOption((o) => o.setName("sec-permissions").setDescription("Permission to add").setRequired(true).addChoices(...permChoices))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("remove")
-      .setDescription("Remove some permission from a user")
-      .addUserOption((o) => o.setName("user").setDescription("User to remove the permission from").setRequired(true))
-      .addIntegerOption((o) => o.setName("sec-permissions").setDescription("Permission to remove").setRequired(true).addChoices(...permChoices))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("view_permission")
-      .setDescription("Get users with the selected permission")
-      .addIntegerOption((o) => o.setName("sec-permissions").setDescription("Permission to check").setRequired(true).addChoices(...permChoices))
-  )
-  .addSubcommand((s) =>
-    s.setName("reset").setDescription("Remove all the permissions from a user").addUserOption((o) => o.setName("user").setDescription("User to remove the permissions from").setRequired(true))
-  )
-  .addSubcommand((s) =>
-    s.setName("reset_id").setDescription("Remove all the permissions from a user using their id").addStringOption((o) => o.setName("user_id").setDescription("User to remove the permissions from").setRequired(true))
-  );
+  .setDescription("Gérer qui peut utiliser les commandes de modération.");
 
+const CMD = "sec-permissions";
 const BLUE = 0x297fb9;
+
+const HUB_OPTIONS = [
+  { label: "Voir les permissions d'un membre", value: "view_user", emoji: "👤", description: "Permissions accordées à un membre" },
+  { label: "Ajouter une permission", value: "add", emoji: "➕", description: "Accorder une permission" },
+  { label: "Retirer une permission", value: "remove", emoji: "➖", description: "Retirer une permission" },
+  { label: "Voir par permission", value: "view_permission", emoji: "🔍", description: "Membres ayant une permission" },
+  { label: "Réinitialiser un membre", value: "reset", emoji: "🧹", description: "Retirer toutes ses permissions" },
+  { label: "Réinitialiser par ID", value: "reset_id", emoji: "🆔", description: "Retirer via l'ID Discord" },
+];
+
+function menuRow() {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${CMD}:menu`)
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      HUB_OPTIONS.map((o) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(o.label)
+          .setValue(o.value)
+          .setDescription(o.description)
+          .setEmoji(o.emoji)
+      )
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function hubPayload(guild: Guild) {
+  const body = panel(
+    [textBlock(`# 🔑 Permissions de modération\nGère qui peut utiliser les commandes de modération sur **${guild.name}**.`)],
+    BLUE
+  );
+  return { components: [body, menuRow()], flags: FLAGS_V2_EPHEMERAL };
+}
+
+function canManage(guild: Guild, interaction: ChatInputCommandInteraction | MessageComponentInteraction | ModalSubmitInteraction): boolean {
+  if (guild.ownerId === interaction.user.id) return true;
+  const perms = (interaction.member as any)?.permissions;
+  return perms?.has(PermissionFlagsBits.ManageGuild) ?? false;
+}
+
+/** Extrait un ID utilisateur depuis une mention ou un ID brut. */
+function parseUserId(raw: string): string | null {
+  const m = raw.trim().match(/^(?:<@!?(\d+)>|(\d{15,20}))$/);
+  return m?.[1] ?? m?.[2] ?? null;
+}
+
+/** Résout une permission depuis son numéro ou son nom. */
+function parsePerm(raw: string): number | null {
+  const t = raw.trim().toLowerCase();
+  const asNum = parseInt(t, 10);
+  if (Number.isFinite(asNum)) {
+    const p = PERMS.find((x) => x.value === asNum);
+    return p ? p.value : null;
+  }
+  const p = PERMS.find((x) => x.name.toLowerCase() === t);
+  return p ? p.value : null;
+}
+
+function permHint(): string {
+  return PERMS.map((p) => `${p.value} = ${p.name}`).join(", ");
+}
+
+function userField(label = "Utilisateur (mention ou ID)"): TextInputBuilder {
+  return new TextInputBuilder()
+    .setCustomId("user")
+    .setLabel(label)
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(40)
+    .setPlaceholder("@utilisateur ou 123456789");
+}
+
+function permField(): TextInputBuilder {
+  return new TextInputBuilder()
+    .setCustomId("permission")
+    .setLabel("Permission (numéro ou nom)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(40)
+    .setPlaceholder("Ex : 0 ou Ban Command");
+}
+
+function showModalFor(interaction: MessageComponentInteraction, action: string): Promise<void> {
+  const modal = new ModalBuilder().setCustomId(`${CMD}:modal:${action}`);
+  const titles: Record<string, string> = {
+    view_user: "Permissions d'un membre",
+    add: "Ajouter une permission",
+    remove: "Retirer une permission",
+    view_permission: "Membres par permission",
+    reset: "Réinitialiser un membre",
+    reset_id: "Réinitialiser par ID",
+  };
+  modal.setTitle(titles[action] ?? "Permissions");
+  if (action === "view_user" || action === "reset") {
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(userField()));
+  } else if (action === "add" || action === "remove") {
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(userField()),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(permField())
+    );
+  } else if (action === "view_permission") {
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(permField()));
+  } else if (action === "reset_id") {
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId("user_id")
+          .setLabel("ID Discord de l'utilisateur")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(25)
+          .setPlaceholder("123456789012345678")
+      )
+    );
+  }
+  return interaction.showModal(modal);
+}
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ components: [msgPanel("This command can only be used in a server.", BLUE)], flags: FLAGS_V2 });
+    await interaction.reply({ components: [msgPanel("Cette commande ne peut être utilisée que sur un serveur.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-
-  const isOwner = guild.ownerId === interaction.user.id;
-  const perms = (interaction.member as any)?.permissions;
-  await interaction.deferReply({ flags: FLAGS_V2 });
-  if (!isOwner && !perms?.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply({ components: [msgPanel(":red_circle: | You don't have permission to use this command.", BLUE)], flags: FLAGS_V2 });
+  if (!canManage(guild, interaction)) {
+    await interaction.reply({ components: [msgPanel("❌ Vous n'avez pas la permission d'utiliser cette commande.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
+  await interaction.reply({ ...hubPayload(guild), flags: FLAGS_V2_EPHEMERAL });
+}
 
-  const sub = interaction.options.getSubcommand();
-  let msg = "";
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const parts = interaction.customId.split(":");
+  if (parts[0] !== CMD) return;
+  if (!canManage(guild, interaction)) {
+    await interaction.reply({ components: [msgPanel("❌ Vous n'avez pas la permission d'utiliser cette commande.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  if (parts[1] === "menu" && interaction.isStringSelectMenu()) {
+    const action = interaction.values[0] ?? "";
+    if (["view_user", "add", "remove", "view_permission", "reset", "reset_id"].includes(action)) {
+      await showModalFor(interaction, action);
+    }
+  }
+}
 
-  if (sub === "view_user") {
-    const user = interaction.options.getUser("user")!;
-    const list = getPerms(guild.id, user.id);
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) return;
+  const parts = interaction.customId.split(":");
+  if (parts[0] !== CMD || parts[1] !== "modal") return;
+  if (!canManage(guild, interaction)) {
+    await interaction.reply({ components: [msgPanel("❌ Vous n'avez pas la permission d'utiliser cette commande.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  const action = parts[2];
+  let msg: string;
+
+  const needUser = ["view_user", "add", "remove", "reset"].includes(action ?? "");
+  let userId: string | null = null;
+  if (needUser) {
+    userId = parseUserId(interaction.fields.getTextInputValue("user"));
+    if (!userId) {
+      await interaction.reply({ components: [msgPanel("❌ Utilisateur invalide : mentionne l'utilisateur ou colle son ID.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+  }
+
+  const needPerm = ["add", "remove", "view_permission"].includes(action ?? "");
+  let perm: number | null = null;
+  if (needPerm) {
+    perm = parsePerm(interaction.fields.getTextInputValue("permission"));
+    if (perm === null) {
+      await interaction.reply({ components: [msgPanel(`❌ Permission invalide. Valeurs possibles : ${permHint()}.`, BLUE)], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
+  }
+
+  if (action === "view_user") {
+    const list = getPerms(guild.id, userId!);
+    const user = await interaction.client.users.fetch(userId!).catch(() => null);
+    const name = user ? user.username : userId!;
     msg = list.length
-      ? `**${user.username}** has these permissions:\n${list.map((p) => `- ${permName(p)}`).join("\n")}`
-      : `**${user.username}** doesn't have any permissions granted.`;
-  } else if (sub === "add") {
-    const user = interaction.options.getUser("user")!;
-    const p = interaction.options.getInteger("permission")!;
-    addPerm(guild.id, user.id, p);
-    msg = `The **${permName(p)}** permission has been granted to **${user.username}**.`;
-  } else if (sub === "remove") {
-    const user = interaction.options.getUser("user")!;
-    const p = interaction.options.getInteger("permission")!;
-    removePerm(guild.id, user.id, p);
-    msg = `The **${permName(p)}** permission has been removed from **${user.username}**.`;
-  } else if (sub === "view_permission") {
-    const p = interaction.options.getInteger("permission")!;
-    const ids = usersWithPerm(guild.id, p);
-    msg = ids.length ? `${permName(p)} is granted to:\n${ids.map((id) => `- <@${id}>`).join("\n")}` : "No one is granted to this permission.";
-  } else if (sub === "reset") {
-    const user = interaction.options.getUser("user")!;
-    resetPerms(guild.id, user.id);
-    msg = `**${user.username}** doesn't have any permissions granted.`;
-  } else if (sub === "reset_id") {
-    const id = interaction.options.getString("user_id")!.trim();
+      ? `**${name}** a ces permissions :\n${list.map((p) => `- ${permName(p)}`).join("\n")}`
+      : `**${name}** n'a aucune permission accordée.`;
+  } else if (action === "add") {
+    const user = await interaction.client.users.fetch(userId!).catch(() => null);
+    addPerm(guild.id, userId!, perm!);
+    msg = `La permission **${permName(perm!)}** a été accordée à **${user ? user.username : userId!}**.`;
+  } else if (action === "remove") {
+    const user = await interaction.client.users.fetch(userId!).catch(() => null);
+    removePerm(guild.id, userId!, perm!);
+    msg = `La permission **${permName(perm!)}** a été retirée à **${user ? user.username : userId!}**.`;
+  } else if (action === "view_permission") {
+    const ids = usersWithPerm(guild.id, perm!);
+    msg = ids.length
+      ? `**${permName(perm!)}** est accordée à :\n${ids.map((id) => `- <@${id}>`).join("\n")}`
+      : "Personne n'a cette permission.";
+  } else if (action === "reset") {
+    const user = await interaction.client.users.fetch(userId!).catch(() => null);
+    resetPerms(guild.id, userId!);
+    msg = `**${user ? user.username : userId!}** n'a plus aucune permission.`;
+  } else if (action === "reset_id") {
+    const id = interaction.fields.getTextInputValue("user_id").trim();
+    if (!/^\d{15,20}$/.test(id)) {
+      await interaction.reply({ components: [msgPanel("❌ ID Discord invalide.", BLUE)], flags: FLAGS_V2_EPHEMERAL });
+      return;
+    }
     resetPerms(guild.id, id);
-    msg = `**${id}** doesn't have any permissions granted.`;
+    msg = `**${id}** n'a plus aucune permission.`;
+  } else {
+    return;
   }
 
-  await interaction.editReply({ components: [panel([textBlock(msg)], BLUE)], flags: FLAGS_V2 });
+  await interaction.reply({ components: [panel([textBlock(msg)], BLUE), menuRow()], flags: FLAGS_V2_EPHEMERAL });
 }

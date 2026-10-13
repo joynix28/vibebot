@@ -1,15 +1,31 @@
-import { SlashCommandBuilder, PermissionFlagsBits, ChannelType } from "discord.js";
-import type { ChatInputCommandInteraction, GuildMember, TextBasedChannel } from "discord.js";
+import {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ActionRowBuilder,
+  ModalBuilder,
+  LabelBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  MessageComponentInteraction,
+  ModalSubmitInteraction,
+  GuildMember,
+  TextBasedChannel,
+} from "discord.js";
 import {
   FLAGS_V2,
   FLAGS_V2_EPHEMERAL,
   BLUE,
+  ACCENT,
   msgPanel,
   okPanel,
   errPanel,
   panel,
   textBlock,
-  sepBlock,
   fieldRaw,
 } from "../../../core/ui.ts";
 import { getWelcome, setWelcome, clearWelcome } from "../func/db-gestion.ts";
@@ -18,25 +34,7 @@ import type { WelcomeConfig } from "../func/db-gestion.ts";
 export const data = new SlashCommandBuilder()
   .setName("welcome")
   .setDescription("Configure les messages de bienvenue et d'au revoir.")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-  .addSubcommand((s) =>
-    s
-      .setName("set")
-      .setDescription("Définit le salon et les messages de bienvenue / au revoir.")
-      .addChannelOption((o) =>
-        o.setName("salon").setDescription("Salon où envoyer les messages.").addChannelTypes(ChannelType.GuildText).setRequired(true)
-      )
-      .addStringOption((o) =>
-        o.setName("bienvenue").setDescription("Message de bienvenue. Variables : {user} {server} {membercount}.")
-      )
-      .addStringOption((o) =>
-        o.setName("aurevoir").setDescription("Message d'au revoir. Variables : {user} {server} {membercount}.")
-      )
-      .addBooleanOption((o) => o.setName("embed").setDescription("Envoyer dans un panneau (défaut : oui)."))
-  )
-  .addSubcommand((s) => s.setName("show").setDescription("Affiche la configuration actuelle."))
-  .addSubcommand((s) => s.setName("test").setDescription("Envoie un message de test dans le salon configuré."))
-  .addSubcommand((s) => s.setName("reset").setDescription("Supprime la configuration."));
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
 export const DEFAULT_JOIN = "🎉 Bienvenue {user} sur **{server}** ! Tu es notre {membercount}e membre.";
 export const DEFAULT_LEAVE = "👋 {user} nous a quittés. Bon vent !";
@@ -58,42 +56,93 @@ export async function sendWelcomeMessage(channel: TextBasedChannel, text: string
   }
 }
 
+function hubContainer() {
+  const container = panel([textBlock("## 👋 Bienvenue & au revoir\n*Choisis une action ci-dessous.*")], ACCENT);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("welcome:menu")
+    .setPlaceholder("Choisis une action…")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Configurer les messages")
+        .setValue("set")
+        .setDescription("Salon, textes de bienvenue et d'au revoir.")
+        .setEmoji("⚙️"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Voir la configuration")
+        .setValue("show")
+        .setDescription("Affiche la configuration actuelle.")
+        .setEmoji("👁️"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Envoyer un test")
+        .setValue("test")
+        .setDescription("Envoie un message de test.")
+        .setEmoji("🧪"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Réinitialiser")
+        .setValue("reset")
+        .setDescription("Supprime la configuration.")
+        .setEmoji("🗑️")
+    );
+  container.addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+  return container;
+}
+
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  await interaction.reply({ components: [hubContainer()], flags: FLAGS_V2_EPHEMERAL });
+}
+
+export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
+  if (!interaction.isStringSelectMenu() || interaction.customId !== "welcome:menu") return;
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  const sub = interaction.options.getSubcommand();
+  const action = interaction.values[0];
 
-  if (sub === "set") {
-    const channel = interaction.options.getChannel("salon", true);
-    const cur = getWelcome(guild.id) ?? {};
-    const next: WelcomeConfig = {
-      channelId: channel.id,
-      join: interaction.options.getString("bienvenue") ?? cur.join ?? DEFAULT_JOIN,
-      leave: interaction.options.getString("aurevoir") ?? cur.leave ?? DEFAULT_LEAVE,
-      embed: interaction.options.getBoolean("embed") ?? cur.embed ?? true,
-    };
-    setWelcome(guild.id, next);
-    await interaction.reply({
-      components: [
-        okPanel(
-          `## ✅ Messages configurés\n${fieldRaw("Salon", `<#${channel.id}>`)}\n${fieldRaw("Bienvenue", next.join ?? "")}\n${fieldRaw("Au revoir", next.leave ?? "")}\n${fieldRaw("Panneau", next.embed ? "oui" : "non")}`
+  if (action === "set") {
+    const modal = new ModalBuilder().setCustomId("welcome:modal:set").setTitle("Messages de bienvenue");
+    modal.addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Salon")
+        .setDescription("Mentionne le salon ou colle son ID.")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("salon").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50)
         ),
-      ],
-      flags: FLAGS_V2_EPHEMERAL,
-    });
+      new LabelBuilder()
+        .setLabel("Message de bienvenue (optionnel)")
+        .setDescription("Variables : {user} {server} {membercount}")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("bienvenue").setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500)
+        ),
+      new LabelBuilder()
+        .setLabel("Message d'au revoir (optionnel)")
+        .setDescription("Variables : {user} {server} {membercount}")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("aurevoir").setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500)
+        ),
+      new LabelBuilder()
+        .setLabel("Panneau (optionnel)")
+        .setDescription("« oui » ou « non ». Défaut : oui.")
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId("panneau").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(3)
+        )
+    );
+    await interaction.showModal(modal);
     return;
   }
 
-  if (sub === "show") {
+  if (action === "show") {
     const cfg = getWelcome(guild.id);
     if (!cfg?.channelId) {
-      await interaction.reply({ components: [errPanel("Aucune configuration. Utilise `/welcome set` pour en créer une.")], flags: FLAGS_V2_EPHEMERAL });
+      await interaction.update({ components: [errPanel("Aucune configuration.")], flags: FLAGS_V2 });
       return;
     }
-    await interaction.reply({
+    await interaction.update({
       components: [
         panel(
           [
@@ -102,33 +151,69 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
           BLUE
         ),
       ],
-      flags: FLAGS_V2_EPHEMERAL,
+      flags: FLAGS_V2,
     });
     return;
   }
 
-  if (sub === "test") {
+  if (action === "test") {
     const cfg = getWelcome(guild.id);
     if (!cfg?.channelId) {
-      await interaction.reply({ components: [errPanel("Aucune configuration. Utilise `/welcome set` d'abord.")], flags: FLAGS_V2_EPHEMERAL });
+      await interaction.update({ components: [errPanel("Aucune configuration.")], flags: FLAGS_V2 });
       return;
     }
     const channel = (await guild.channels.fetch(cfg.channelId).catch(() => null)) as TextBasedChannel | null;
     if (!channel?.isSendable()) {
-      await interaction.reply({ components: [errPanel("Le salon configuré est introuvable.")], flags: FLAGS_V2_EPHEMERAL });
+      await interaction.update({ components: [errPanel("Le salon configuré est introuvable.")], flags: FLAGS_V2 });
       return;
     }
     const member = interaction.member as GuildMember | null;
     if (!member) {
-      await interaction.reply({ components: [errPanel("Impossible de récupérer ton profil.")], flags: FLAGS_V2_EPHEMERAL });
+      await interaction.update({ components: [errPanel("Impossible de récupérer ton profil.")], flags: FLAGS_V2 });
       return;
     }
     await sendWelcomeMessage(channel, renderWelcome(cfg.join ?? DEFAULT_JOIN, member), cfg.embed !== false);
-    await interaction.reply({ components: [okPanel("Message de test envoyé.")], flags: FLAGS_V2_EPHEMERAL });
+    await interaction.update({ components: [okPanel("Message de test envoyé.")], flags: FLAGS_V2 });
     return;
   }
 
-  // reset
-  clearWelcome(guild.id);
-  await interaction.reply({ components: [okPanel("Configuration des messages supprimée.")], flags: FLAGS_V2_EPHEMERAL });
+  if (action === "reset") {
+    clearWelcome(guild.id);
+    await interaction.update({ components: [okPanel("Configuration des messages supprimée.")], flags: FLAGS_V2 });
+    return;
+  }
+}
+
+export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  if (interaction.customId !== "welcome:modal:set") return;
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  const channelId = interaction.fields.getTextInputValue("salon").match(/\d{17,20}/)?.[0];
+  const channel = channelId ? await guild.channels.fetch(channelId).catch(() => null) : null;
+  if (!channel?.isTextBased()) {
+    await interaction.reply({ components: [errPanel("Salon introuvable. Mentionne un salon textuel valide.")], flags: FLAGS_V2_EPHEMERAL });
+    return;
+  }
+  const cur = getWelcome(guild.id) ?? {};
+  const bienvenueRaw = interaction.fields.getTextInputValue("bienvenue")?.trim();
+  const aurevoirRaw = interaction.fields.getTextInputValue("aurevoir")?.trim();
+  const panneauRaw = interaction.fields.getTextInputValue("panneau")?.trim().toLowerCase();
+  const next: WelcomeConfig = {
+    channelId: channel.id,
+    join: bienvenueRaw || cur.join || DEFAULT_JOIN,
+    leave: aurevoirRaw || cur.leave || DEFAULT_LEAVE,
+    embed: panneauRaw ? panneauRaw !== "non" : (cur.embed ?? true),
+  };
+  setWelcome(guild.id, next);
+  await interaction.reply({
+    components: [
+      okPanel(
+        `## ✅ Messages configurés\n${fieldRaw("Salon", `<#${channel.id}>`)}\n${fieldRaw("Bienvenue", next.join ?? "")}\n${fieldRaw("Au revoir", next.leave ?? "")}\n${fieldRaw("Panneau", next.embed ? "oui" : "non")}`
+      ),
+    ],
+    flags: FLAGS_V2_EPHEMERAL,
+  });
 }

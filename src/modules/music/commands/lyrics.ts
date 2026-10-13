@@ -1,17 +1,6 @@
-import { SlashCommandBuilder } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import type { HubInteraction } from "./_hub.ts";
 import { FLAGS_V2, FLAGS_V2_EPHEMERAL, errPanel, msgPanel, BLUE, GOLD } from "../../../core/ui.ts";
 import { getQueue } from "../func/player.ts";
-
-export const data = new SlashCommandBuilder()
-  .setName("lyrics")
-  .setDescription("Affiche les paroles d'un morceau (si disponibles).")
-  .addStringOption((o) =>
-    o
-      .setName("morceau")
-      .setDescription("« Artiste - Titre ». Par défaut : le morceau en cours.")
-      .setMaxLength(200)
-  );
 
 interface LyricsResponse {
   lyrics?: string;
@@ -37,13 +26,13 @@ async function fetchLyrics(artist: string, title: string): Promise<string | null
   }
 }
 
-export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function runLyrics(interaction: HubInteraction, morceau: string | null): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
     return;
   }
-  let raw = interaction.options.getString("morceau")?.trim();
+  let raw = morceau?.trim() || undefined;
   if (!raw) {
     const np = getQueue(guild.id)?.nowPlaying();
     if (!np) {
