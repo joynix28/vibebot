@@ -3,322 +3,210 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0a0a12">
-<title>Configuration — Fusion Bot</title>
-<link rel="stylesheet" href="/style.css?v=3">
+<meta name="theme-color" content="#0b0d13">
+<title>Serveur — Fusion Bot</title>
+<link rel="stylesheet" href="/style.css?v=volt1">
 </head>
 <body>
-<header class="topbar"><div class="in">
-  <a class="logo" href="/"><span class="mark">⚡</span>Fusion<em>Bot</em></a>
-  <span class="spacer"></span>
-  <span id="me-area"></span>
-</div></header>
+<div class="topbar"><div class="topbar-in">
+  <a href="/dashboard" class="btn ghost sm" style="text-decoration:none">‹</a>
+  <div class="ava" id="gico" style="width:38px;height:38px;font-size:17px">?</div>
+  <div class="brand"><span id="gname">Chargement…</span><small id="gsub"></small></div>
+  <div class="spacer"></div>
+  <nav class="sidenav">
+    <a href="/dashboard">Serveurs</a>
+    <a href="/logout">Déconnexion</a>
+  </nav>
+</div></div>
 
-<main class="wrap page">
-  <a class="backbtn" href="/dashboard">‹ Mes serveurs</a>
-  <div id="head"><div class="card"><div class="skel" style="height:66px;border-radius:14px"></div></div></div>
+<div class="wrap">
+  <div id="view-home"></div>
+  <div id="view-modules" hidden></div>
+  <div id="view-commands" hidden></div>
+</div>
 
-  <div class="layout" style="margin-top:4px">
-    <nav class="sidebar" id="sidebar">
-      <a href="#" data-tab="overview" class="active"><span class="ico">🏠</span>Vue d'ensemble</a>
-      <a href="#" data-tab="modules"><span class="ico">🧩</span>Modules</a>
-      <a href="#" data-tab="commands"><span class="ico">⌨️</span>Commandes</a>
-    </nav>
-    <div>
-      <div class="tabs" id="mobiletabs" style="display:none">
-        <button class="tab active" data-tab="overview">🏠 Accueil</button>
-        <button class="tab" data-tab="modules">🧩 Modules</button>
-        <button class="tab" data-tab="commands">⌨️ Commandes</button>
-      </div>
-      <section id="view"></section>
-    </div>
-  </div>
-</main>
+<nav class="tabbar"><div class="tabbar-in">
+  <button class="tab on" data-v="home"><span class="ic">📊</span>Accueil</button>
+  <button class="tab" data-v="modules"><span class="ic">🧩</span>Modules</button>
+  <button class="tab" data-v="commands"><span class="ic">⌨️</span>Commandes</button>
+  <a class="tab" href="/dashboard"><span class="ic">🏠</span>Serveurs</a>
+</div></nav>
 
-<nav class="tabbar" id="tabbar">
-  <a href="#" data-tab="overview" class="active"><span class="ico">🏠</span>Accueil</a>
-  <a href="#" data-tab="modules"><span class="ico">🧩</span>Modules</a>
-  <a href="#" data-tab="commands"><span class="ico">⌨️</span>Commandes</a>
-  <a href="/dashboard"><span class="ico">🖥️</span>Serveurs</a>
-</nav>
-
-<div id="sheet-root"></div>
-<div id="toasts"></div>
-
-<script src="/app.js?v=3"></script>
+<script src="/app.js?v=volt1"></script>
 <script>
-const _pm = location.pathname.match(/^\/dashboard\/(\d+)/);
-const gid = (_pm && _pm[1]) || new URLSearchParams(location.search).get("id");
-if (!gid) location.href = "/dashboard";
-
-let G = null;      // /api/guild/:id
-let CMDS = [];     // /api/guild/:id/commands
-let tab = "overview";
-
-function setTab(name) {
-  tab = name;
-  $$("#tabbar a[data-tab], #sidebar a[data-tab], #mobiletabs .tab").forEach(a =>
-    a.classList.toggle("active", a.dataset.tab === name));
-  if (name === "overview") renderOverview();
-  if (name === "modules") renderModules();
-  if (name === "commands") renderCommands("");
-}
-$$("#tabbar a[data-tab], #sidebar a[data-tab]").forEach(a =>
-  a.addEventListener("click", e => { e.preventDefault(); setTab(a.dataset.tab); window.scrollTo({top:0,behavior:"smooth"}); }));
-
-function modById(mid) { return (G.modules || []).find(m => m.id === mid); }
-
-async function toggleModule(mid, on) {
-  try {
-    const r = await fetch("/api/guild/" + gid + "/modules/" + mid + "/toggle", {
-      method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ enabled: on })
-    });
-    if (!r.ok) throw new Error();
-    const m = modById(mid); if (m) m.enabled = on;
-    toast(on ? "Module activé ✓" : "Module désactivé");
-  } catch(e) {
-    toast("Échec de la sauvegarde", false);
-    $$('input[data-toggle="' + mid + '"]').forEach(i => { i.checked = !on; });
-  }
-}
-
-function renderHead() {
-  const icon = G.icon ? '<span class="guild-icon"><img src="' + esc(G.icon) + '" alt=""></span>'
-    : '<span class="guild-icon">' + esc((G.name||"?").trim().charAt(0).toUpperCase()) + "</span>";
-  $("#head").innerHTML =
-    '<div class="guild-head">' + icon +
-    '<div style="flex:1;min-width:0"><h1 style="font-size:22px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(G.name) + "</h1>" +
-    '<p class="muted" style="font-size:13.5px">' + (G.memberCount ?? "?") + " membres · " + (G.channelCount ?? "?") + " salons · " + (G.commandCount ?? CMDS.length) + " commandes</p></div></div>";
-  document.title = G.name + " — Fusion Bot";
-}
-
-/* ── Vue d'ensemble ── */
-function renderOverview() {
-  const on = (G.modules||[]).filter(m => m.enabled).length;
-  $("#view").innerHTML =
-    '<div class="stats" style="margin-top:0">' +
-    '<div class="stat"><b>' + (G.memberCount ?? "—") + "</b><span>Membres</span></div>" +
-    '<div class="stat"><b>' + (G.channelCount ?? "—") + "</b><span>Salons</span></div>" +
-    '<div class="stat"><b>' + on + "/" + (G.modules||[]).length + "</b><span>Modules actifs</span></div></div>" +
-    '<h2 class="section-title">🧩 Modules</h2>' +
-    '<div class="grid cols2">' + (G.modules||[]).map(m =>
-      '<div class="card mod-card"><span class="mi">' + esc(m.emoji || "🧩") + '</span>' +
-      '<span class="info"><h3>' + esc(m.name) + '</h3><p>' + esc(m.description || "") + "</p></span>" +
-      switchHTML(m.id, m.enabled) + "</div>").join("") + "</div>" +
-    '<h2 class="section-title">🚀 Actions rapides</h2>' +
-    '<div class="grid cols2">' +
-    '<button class="card pressable row" data-go="commands" style="width:100%;text-align:left"><span class="mi">⌨️</span><span class="info"><h3>Explorer les commandes</h3><p class="muted" style="font-size:13px">' + CMDS.length + ' commandes disponibles</p></span></button>' +
-    '<button class="card pressable row" data-go="modules" style="width:100%;text-align:left"><span class="mi">⚙️</span><span class="info"><h3>Configurer un module</h3><p class="muted" style="font-size:13px">Réglages en direct, sans rechargement</p></span></button></div>';
-  bindToggles($("#view"));
-  $$('#view [data-go]').forEach(b => b.addEventListener("click", () => setTab(b.dataset.go)));
-}
-
-function bindToggles(root) {
-  root.querySelectorAll("input[data-toggle]").forEach(inp => {
-    inp.addEventListener("change", () => toggleModule(inp.dataset.toggle, inp.checked));
-  });
-}
-
-/* ── Modules (liste → panneau config) ── */
-function renderModules() {
-  $("#view").innerHTML =
-    '<p class="muted" style="margin-bottom:12px;font-size:14px">Touchez un module pour ouvrir ses réglages. Tout est sauvegardé automatiquement.</p>' +
-    '<div class="grid cols2">' + (G.modules||[]).map(m =>
-      '<button class="card mod-card pressable" data-open="' + esc(m.id) + '" style="width:100%;text-align:left">' +
-      '<span class="mi">' + esc(m.emoji || "🧩") + '</span>' +
-      '<span class="info"><h3>' + esc(m.name) + '</h3><p>' + esc(m.description || "") + '</p></span>' +
-      '<span onclick="event.stopPropagation()">' + switchHTML(m.id, m.enabled) + "</span>" +
-      '<span class="chev">›</span></button>').join("") + "</div>";
-  bindToggles($("#view"));
-  $$("#view [data-open]").forEach(b => b.addEventListener("click", () => openSheet(b.dataset.open)));
-}
-
-/* ── Commandes (explorateur) ── */
-let cmdFilter = "";
-function renderCommands(q) {
-  cmdFilter = q;
-  const mods = {};
-  (G.modules||[]).forEach(m => mods[m.id] = m);
-  const f = q.toLowerCase();
-  const shown = CMDS.filter(c =>
-    !f || (c.name||"").toLowerCase().includes(f) || (c.description||"").toLowerCase().includes(f));
-  const modIds = [...new Set(CMDS.map(c => c.module).filter(Boolean))];
-  $("#view").innerHTML =
-    '<div class="search"><span class="sico">🔍</span><input class="input" id="cq" type="search" placeholder="Rechercher une commande…" value="' + esc(q) + '" autocomplete="off"></div>' +
-    '<div class="tabs" id="modfilter"><button class="tab active" data-mf="">Toutes</button>' +
-    modIds.map(mid => '<button class="tab" data-mf="' + esc(mid) + '">' + esc(mods[mid] ? mods[mid].emoji + " " + mods[mid].name : mid) + "</button>").join("") + "</div>" +
-    '<p class="muted" style="font-size:13.5px;margin-bottom:10px"><b class="grad-text" id="cmdcount">' + shown.length + "</b> commande" + (shown.length>1?"s":"") + "</p>" +
-    '<div class="grid cols2" id="cmdlist">' + shown.map(c =>
-      '<div class="card cmd-card"><span class="ci">' + esc(c.emoji || (mods[c.module]||{}).emoji || "⌨️") + '</span>' +
-      '<span style="min-width:0"><span class="cmd-name">/' + esc(c.name) + "</span><p>" + esc(c.description || "") + "</p>" +
-      (c.module ? '<span class="badge dim" style="margin-top:6px">' + esc((mods[c.module]||{}).name || c.module) + "</span>" : "") + "</span></div>").join("") +
-    (shown.length ? "" : '<div class="empty"><span class="ei">🔍</span><h3>Aucune commande</h3><p>Essaie un autre mot-clé.</p></div>') + "</div>";
-  $("#cq").addEventListener("input", e => {
-    const mf = ($('#modfilter .tab.active') || {}).dataset || {};
-    applyCmdFilter(e.target.value, mf.mf || "");
-  });
-  $$("#modfilter .tab").forEach(t => t.addEventListener("click", () => {
-    $$("#modfilter .tab").forEach(x => x.classList.remove("active"));
-    t.classList.add("active");
-    applyCmdFilter($("#cq").value, t.dataset.mf || "");
-  }));
-}
-function applyCmdFilter(q, mf) {
-  const mods = {};
-  (G.modules||[]).forEach(m => mods[m.id] = m);
-  const f = q.toLowerCase();
-  const shown = CMDS.filter(c =>
-    (!f || (c.name||"").toLowerCase().includes(f) || (c.description||"").toLowerCase().includes(f)) &&
-    (!mf || c.module === mf));
-  $("#cmdcount").textContent = shown.length;
-  $("#cmdlist").innerHTML = shown.map(c =>
-    '<div class="card cmd-card"><span class="ci">' + esc(c.emoji || (mods[c.module]||{}).emoji || "⌨️") + '</span>' +
-    '<span style="min-width:0"><span class="cmd-name">/' + esc(c.name) + "</span><p>" + esc(c.description || "") + "</p>" +
-    (c.module ? '<span class="badge dim" style="margin-top:6px">' + esc((mods[c.module]||{}).name || c.module) + "</span>" : "") + "</span></div>").join("") +
-    (shown.length ? "" : '<div class="empty"><span class="ei">🔍</span><h3>Aucune commande</h3><p>Essaie un autre mot-clé.</p></div>');
-}
-
-/* ── Panneau de config d'un module (live config) ── */
-let sheetTimer = null;
-function openSheet(mid) {
-  const m = modById(mid);
-  if (!m) return;
-  closeSheet();
-  const root = $("#sheet-root");
-  root.innerHTML = '<div class="backdrop" id="bd"></div><div class="sheet" role="dialog" aria-modal="true">' +
-    '<div class="grab"></div><div class="sheet-head"><span class="mi" style="font-size:28px">' + esc(m.emoji||"🧩") + "</span>" +
-    "<h2>" + esc(m.name) + '</h2><span class="save-state" id="savestate"></span>' +
-    '<button class="sheet-close" id="sclose" aria-label="Fermer">✕</button></div>' +
-    '<div class="sheet-body"><div class="row" style="justify-content:space-between;margin-bottom:18px">' +
-    '<span class="muted" style="font-size:14px">Module ' + (m.enabled ? '<b class="grad-text">activé</b>' : "<b>désactivé</b>") + "</span>" +
-    switchHTML(mid, m.enabled) + "</div>" +
-    '<div id="fields"><div class="skel" style="height:52px;margin-bottom:12px"></div><div class="skel" style="height:52px;margin-bottom:12px"></div><div class="skel" style="height:52px"></div></div></div></div>';
-  $("#bd").addEventListener("click", closeSheet);
-  $("#sclose").addEventListener("click", closeSheet);
-  document.addEventListener("keydown", escClose);
-  bindToggles(root);
-  loadFields(mid);
-}
-function escClose(e) { if (e.key === "Escape") closeSheet(); }
-function closeSheet() {
-  if (sheetTimer) { clearTimeout(sheetTimer); sheetTimer = null; }
-  document.removeEventListener("keydown", escClose);
-  $("#sheet-root").innerHTML = "";
-}
-function setSaveState(kind, label) {
-  const el = $("#savestate"); if (!el) return;
-  el.className = "save-state " + kind;
-  el.innerHTML = kind === "saving" ? '<span class="spin"></span>' + esc(label || "Enregistrement…")
-    : kind === "saved" ? "✓ " + esc(label || "Sauvegardé")
-    : kind === "error" ? "⚠ " + esc(label || "Erreur") : "";
-}
-
-function fieldHTML(f) {
-  const id = "f_" + f.key;
-  const hint = f.hint ? '<div class="hint">' + esc(f.hint) + "</div>" : "";
-  if (f.type === "info") {
-    return '<div class="field"><div class="card" style="padding:14px;font-size:14px"><span class="muted">' + esc(f.label) + "</span></div></div>";
-  }
-  if (f.type === "boolean") {
-    return '<div class="field"><div class="field-row"><div><label style="margin:0" for="' + id + '">' + esc(f.label) + "</label>" + hint +
-      '</div><label class="switch"><input type="checkbox" id="' + id + '" data-key="' + esc(f.key) + '" data-type="boolean"' +
-      (f.value ? " checked" : "") + '><span class="track"></span></label></div></div>';
-  }
-  if (f.type === "channel") {
-    const chans = (G.channels || []).filter(c =>
-      f.kind ? c.kind === f.kind : c.kind !== "category");
-    const opts = '<option value="">— Aucun —</option>' + chans.map(c =>
-      '<option value="' + esc(c.id) + '"' + (String(f.value) === String(c.id) ? " selected" : "") + ">" +
-      (c.kind === "voice" ? "🔊 " : c.kind === "category" ? "📁 " : "#") + esc(c.name) + "</option>").join("");
-    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><select class="input" id="' + id + '" data-key="' + esc(f.key) + '" data-type="channel">' + opts + "</select>" + hint + "</div>";
-  }
-  if (f.type === "role") {
-    const opts = '<option value="">— Aucun —</option>' + (G.roles || []).map(r => {
-      const hex = r.color ? "#" + Number(r.color).toString(16).padStart(6, "0") : "";
-      return '<option value="' + esc(r.id) + '"' + (String(f.value) === String(r.id) ? " selected" : "") + ">" +
-        esc(r.name) + (hex ? " (" + hex + ")" : "") + "</option>";
-    }).join("");
-    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><select class="input" id="' + id + '" data-key="' + esc(f.key) + '" data-type="role">' + opts + "</select>" + hint + "</div>";
-  }
-  if (f.type === "select" && Array.isArray(f.options)) {
-    const opts = f.options.map(o => {
-      const v = typeof o === "object" ? o.value : o, l = typeof o === "object" ? (o.label || o.value) : o;
-      return '<option value="' + esc(v) + '"' + (String(f.value) === String(v) ? " selected" : "") + ">" + esc(l) + "</option>";
-    }).join("");
-    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><select class="input" id="' + id + '" data-key="' + esc(f.key) + '" data-type="select">' + opts + "</select>" + hint + "</div>";
-  }
-  if (f.type === "number") {
-    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><input class="input" type="number" id="' + id + '" data-key="' + esc(f.key) + '" data-type="number" value="' + esc(f.value ?? "") + '" inputmode="numeric"' + (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" + hint + "</div>";
-  }
-  return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><input class="input" type="text" id="' + id + '" data-key="' + esc(f.key) + '" data-type="text" value="' + esc(f.value ?? "") + '"' + (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" + hint + "</div>";
-}
-
-async function loadFields(mid) {
-  try {
-    const s = await fetch("/api/guild/" + gid + "/modules/" + mid + "/schema").then(r => r.json());
-    const box = $("#fields");
-    if (!box) return;
-    if (!s.fields || !s.fields.length) {
-      box.innerHTML = '<div class="empty" style="padding:28px"><span class="ei">⚙️</span><p>Aucun réglage pour ce module.</p></div>';
-      return;
-    }
-    box.innerHTML = s.fields.map(fieldHTML).join("");
-    const values = {};
-    s.fields.forEach(f => { values[f.key] = f.value; });
-    box.querySelectorAll("[data-key]").forEach(el => {
-      const key = el.dataset.key, type = el.dataset.type;
-      const push = () => {
-        let v = type === "boolean" ? el.checked : el.value;
-        if (type === "number") v = v === "" ? null : Number(v);
-        values[key] = v;
-        scheduleSave(mid, values);
-      };
-      if (type === "boolean" || el.tagName === "SELECT") el.addEventListener("change", push);
-      else el.addEventListener("input", push);
-    });
-  } catch(e) {
-    const box = $("#fields");
-    if (box) box.innerHTML = '<div class="empty" style="padding:28px"><span class="ei">😵</span><p>Chargement impossible.</p><button class="btn small" onclick="location.reload()">Réessayer</button></div>';
-  }
-}
-function scheduleSave(mid, values) {
-  setSaveState("saving");
-  if (sheetTimer) clearTimeout(sheetTimer);
-  sheetTimer = setTimeout(async () => {
-    try {
-      const r = await fetch("/api/guild/" + gid + "/modules/" + mid + "/config", {
-        method: "POST", headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({ values })
-      });
-      if (!r.ok) throw new Error();
-      setSaveState("saved");
-      setTimeout(() => setSaveState(""), 1800);
-    } catch(e) {
-      setSaveState("error");
-      toast("Échec de la sauvegarde", false);
-    }
-  }, 500);
-}
-
-/* ── Init ── */
 (async () => {
-  if (matchMedia("(min-width:900px)").matches) $("#mobiletabs").style.display = "none";
-  else $("#mobiletabs").style.display = "flex";
-  try {
-    const me = await fetch("/api/me").then(r => r.ok ? r.json() : null);
-    if (!me) { location.href = "/login"; return; }
-    $("#me-area").innerHTML = '<a href="/dashboard"><img class="avatar" src="' + esc(me.avatar) + '" alt=""></a>';
-    const [g, c] = await Promise.all([
-      fetch("/api/guild/" + gid).then(r => { if (!r.ok) throw new Error(); return r.json(); }),
-      fetch("/api/guild/" + gid + "/commands").then(r => r.ok ? r.json() : [])
-    ]);
-    G = g; CMDS = Array.isArray(c) ? c : [];
-    renderHead();
-    setTab("overview");
-  } catch(e) {
-    $("#head").innerHTML = '<div class="empty"><span class="ei">😵</span><h3>Serveur introuvable</h3><p>Tu n\'as peut-être pas les droits, ou le bot n\'est pas sur ce serveur.</p><a class="btn" style="margin-top:16px" href="/dashboard">Retour</a></div>';
+  const gid = location.pathname.split("/").filter(Boolean).pop();
+  const $ = id => document.getElementById(id);
+  const views = { home: $("view-home"), modules: $("view-modules"), commands: $("view-commands") };
+  document.querySelectorAll(".tab[data-v]").forEach(t => t.addEventListener("click", () => {
+    document.querySelectorAll(".tab[data-v]").forEach(x => x.classList.remove("on"));
+    t.classList.add("on");
+    Object.entries(views).forEach(([k, v]) => v.hidden = k !== t.dataset.v);
+    window.scrollTo({ top: 0 });
+  }));
+
+  views.home.innerHTML = App.skeleton(3, 90);
+  const g = await App.api(`/api/guild/${gid}`).catch(() => null);
+  if (!g) { views.home.innerHTML = `<div class="empty"><div class="big">😴</div>Serveur introuvable ou bot absent.<br><a class="btn ghost sm mt" href="/dashboard">Retour</a></div>`; return; }
+
+  document.title = g.name + " — Fusion Bot";
+  $("gname").textContent = g.name;
+  $("gsub").textContent = `${g.memberCount ?? "?"} membres · ${g.channelCount ?? "?"} salons`;
+  const ic = App.iconUrl(g.id, g.icon);
+  $("gico").innerHTML = ic ? `<img src="${ic}" alt="">` : App.esc(g.name.slice(0, 1).toUpperCase());
+
+  // ---- Accueil ----
+  views.home.innerHTML = `
+    <div class="card"><div class="row">
+      <div class="grow"><h2>Vue d'ensemble</h2><div class="sub">État du bot sur ce serveur</div></div>
+      <span class="badge">EN LIGNE</span>
+    </div>
+    <div class="stats" style="margin:6px 0 0">
+      <div class="stat"><b>${g.commandCount ?? "–"}</b><span>commandes</span></div>
+      <div class="stat"><b>${g.modules.filter(m => m.enabled).length}/${g.modules.length}</b><span>modules actifs</span></div>
+      <div class="stat"><b>${g.memberCount ?? "–"}</b><span>membres</span></div>
+    </div></div>
+    <div class="secttl">Modules</div>
+    <div class="card" style="padding:8px 14px" id="modlist"></div>`;
+
+  const modlist = document.getElementById("modlist");
+  const paintMods = () => {
+    modlist.innerHTML = g.modules.map(m => `
+      <div class="item" data-m="${m.id}" style="cursor:default">
+        <div class="ava">${m.emoji || "🧩"}</div>
+        <div class="grow"><div class="t">${App.esc(m.name)}</div><div class="d">${App.esc(m.description || "")}</div></div>
+        <span data-tgl="${m.id}"></span>
+      </div>`).join("");
+    g.modules.forEach(m => {
+      const slot = modlist.querySelector(`[data-tgl="${m.id}"]`);
+      slot.appendChild(App.toggle(m.enabled, async (v, revert) => {
+        try { await App.api(`/api/guild/${gid}/modules/${m.id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: v }) }); m.enabled = v; App.toast(v ? "Module activé ✓" : "Module désactivé", "ok"); }
+        catch (e) { revert(); App.toast("Échec : " + e.message, "err"); }
+      }));
+    });
+  };
+  paintMods();
+
+  // ---- Modules (config détaillée) ----
+  views.modules.innerHTML = `<div class="secttl" style="margin-top:4px">Configuration des modules</div>
+    <div class="card" style="padding:8px 14px">` + g.modules.map(m => `
+      <button class="item" data-cfg="${m.id}">
+        <div class="ava">${m.emoji || "🧩"}</div>
+        <div class="grow"><div class="t">${App.esc(m.name)}</div><div class="d">${m.enabled ? "Activé" : "Désactivé"} · toucher pour configurer</div></div>
+        <span class="chev">›</span>
+      </button>`).join("") + `</div>`;
+
+  views.modules.querySelectorAll("[data-cfg]").forEach(b => b.addEventListener("click", () => openModule(b.dataset.cfg)));
+
+  async function openModule(mid) {
+    const meta = g.modules.find(m => m.id === mid);
+    const s = App.sheet(meta ? meta.name : mid, "Chargement…");
+    s.body.innerHTML = App.skeleton(4, 58);
+    let schema;
+    try { schema = await App.api(`/api/guild/${gid}/modules/${mid}/schema`); }
+    catch (e) { s.body.innerHTML = `<div class="empty"><div class="big">😴</div>${App.esc(e.message)}</div>`; return; }
+    s.setTitle(schema.title || (meta ? meta.name : mid));
+    s.body.querySelector("p");
+
+    const bar = document.createElement("div");
+    bar.className = "savebar";
+    const vals = {};
+    const fields = schema.fields || [];
+
+    const save = (() => {
+      let t = null;
+      return () => {
+        clearTimeout(t);
+        bar.innerHTML = `<span class="spin"></span> Enregistrement…`;
+        t = setTimeout(async () => {
+          try {
+            await App.api(`/api/guild/${gid}/modules/${mid}/config`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: vals }) });
+            bar.innerHTML = `<span class="ok">✓ Sauvegardé</span>`;
+          } catch (e) { bar.innerHTML = `<span style="color:var(--danger)">Échec : ${App.esc(e.message)}</span>`; }
+        }, 500);
+      };
+    })();
+
+    const wrap = document.createElement("div");
+    fields.forEach(f => {
+      if (f.type === "info") { const d = document.createElement("div"); d.className = "card"; d.style.background = "var(--bg2)"; d.innerHTML = `<div class="sub" style="margin:0">${App.esc(f.value)}</div>`; wrap.appendChild(d); return; }
+      vals[f.key] = f.value;
+      const fd = document.createElement("div");
+      fd.className = "field";
+      const lab = document.createElement("label");
+      lab.textContent = f.label;
+      fd.appendChild(lab);
+
+      if (f.type === "boolean") {
+        const r = document.createElement("div"); r.className = "row";
+        const t = App.toggle(!!f.value, v => { vals[f.key] = v; save(); });
+        const st = document.createElement("span"); st.className = "mut"; st.textContent = f.value ? "Activé" : "Désactivé";
+        const orig = t.onclick;
+        r.append(t, st); fd.appendChild(r);
+        t.addEventListener("click", () => setTimeout(() => st.textContent = t.getAttribute("aria-checked") === "true" ? "Activé" : "Désactivé", 0), true);
+      } else if (f.type === "channel" || f.type === "role") {
+        const sel = document.createElement("select");
+        sel.className = "in";
+        const opts = f.type === "channel" ? g.channels : g.roles;
+        sel.innerHTML = `<option value="">— Non défini —</option>` + opts.map(o => {
+          if (f.type === "channel") {
+            const icn = o.kind === "voice" ? "🔊" : o.kind === "category" ? "📁" : "#";
+            return `<option value="${o.id}" ${String(f.value) === o.id ? "selected" : ""}>${icn} ${App.esc(o.name)}</option>`;
+          }
+          const dot = o.color ? `<span class="role-dot" style="background:#${o.color.toString(16).padStart(6, "0")}"></span>` : "";
+          return `<option value="${o.id}" ${String(f.value) === o.id ? "selected" : ""}>${App.esc(o.name)}</option>`;
+        }).join("");
+        sel.addEventListener("change", () => { vals[f.key] = sel.value || null; save(); });
+        fd.appendChild(sel);
+      } else if (f.type === "number") {
+        const inp = document.createElement("input");
+        inp.className = "in"; inp.type = "number"; inp.value = f.value ?? "";
+        inp.addEventListener("change", () => { vals[f.key] = inp.value === "" ? null : Number(inp.value); save(); });
+        fd.appendChild(inp);
+      } else {
+        const inp = document.createElement("input");
+        inp.className = "in"; inp.type = "text"; inp.value = f.value ?? "";
+        inp.placeholder = f.label;
+        inp.addEventListener("change", () => { vals[f.key] = inp.value.trim() || null; save(); });
+        fd.appendChild(inp);
+      }
+      if (f.hint) { const h = document.createElement("div"); h.className = "hint"; h.textContent = f.hint; fd.appendChild(h); }
+      wrap.appendChild(fd);
+    });
+    if (!fields.length) wrap.innerHTML = `<div class="empty"><div class="big">🧩</div>Aucun réglage pour ce module.</div>`;
+    s.body.innerHTML = "";
+    s.body.append(wrap, bar);
   }
+
+  // ---- Commandes ----
+  views.commands.innerHTML = `
+    <div class="search"><input class="in" id="cq" type="search" placeholder="Rechercher une commande…" autocomplete="off"></div>
+    <div id="pills" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"></div>
+    <div id="cmds">${App.skeleton(5, 58)}</div>`;
+  const cmds = await App.api(`/api/guild/${gid}/commands`).catch(() => []);
+  const mods = [...new Set(cmds.map(c => c.moduleId))].sort();
+  let fmod = "";
+  const pills = document.getElementById("pills");
+  const paintPills = () => {
+    pills.innerHTML = `<button class="pill ${!fmod ? "on" : ""}" data-m="">Toutes</button>` +
+      mods.map(m => `<button class="pill ${fmod === m ? "on" : ""}" data-m="${App.esc(m)}">${App.esc(m)}</button>`).join("");
+    pills.querySelectorAll(".pill").forEach(p => p.addEventListener("click", () => { fmod = p.dataset.m; paintPills(); paintCmds(document.getElementById("cq").value); }));
+  };
+  const paintCmds = (q) => {
+    const list = cmds.filter(c =>
+      (!fmod || c.moduleId === fmod) &&
+      (!q || (c.name + " " + c.description).toLowerCase().includes(q.toLowerCase())));
+    document.getElementById("cmds").innerHTML = list.length
+      ? `<div class="card" style="padding:8px 14px">` + list.map(c => `
+        <div class="item" style="cursor:default">
+          <div class="grow"><div class="cmdname">/${App.esc(c.name)}</div><div class="d">${App.esc(c.description || "")}</div></div>
+          <span class="badge off">${App.esc(c.moduleId)}</span>
+        </div>`).join("") + `</div>
+        <p class="ctr mut">${list.length} commande${list.length > 1 ? "s" : ""}</p>`
+      : `<div class="empty"><div class="big">🔍</div>Aucune commande trouvée.</div>`;
+  };
+  paintPills(); paintCmds("");
+  document.getElementById("cq").addEventListener("input", e => paintCmds(e.target.value));
 })();
 </script>
 </body>
