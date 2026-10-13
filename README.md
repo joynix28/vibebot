@@ -2,7 +2,7 @@
 
 Bot Discord multifonction — **Bun + TypeScript + discord.js v14**, réponses en **Components V2**, dashboard web avec OAuth2 Discord.
 
-Fusion de 12 bots : Security, NdProtect, TempVoice, Xenon, Froggy, LegacyBot, TitanBot, MusicBot, evobot, discord-tickets, CorwinDev Discord-Bot, abot.
+Ce qui est proposé permet d'économiser  12 bots : Security, NdProtect, TempVoice, Xenon, Froggy, LegacyBot, TitanBot, MusicBot, evobot, discord-tickets, CorwinDev Discord-Bot, abot.
 
 ## 🧩 Modules
 
