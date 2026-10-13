@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fusion — Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="logo">⚡</span> Fusion</a>
+    <div>
+      <a id="login-btn" class="btn btn-primary" href="/login" style="display:none;">Se connecter avec Discord</a>
+      <div id="user-chip" class="user-chip" style="display:none;"></div>
+    </div>
+  </header>
+
+  <main class="hero">
+    <div class="logo-big">⚡</div>
+    <h1>Fusion Bot</h1>
+    <p id="hero-sub">Sécurité, musique, tickets, économie, salons vocaux temporaires, sauvegardes et outils communautaires — tout votre serveur, piloté depuis un seul dashboard.</p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+      <a class="btn btn-primary" href="/login" style="font-size:1.05rem;padding:13px 26px;">🔗 Se connecter avec Discord</a>
+    </div>
+    <div class="grid stats" id="hero-stats" style="max-width:640px;margin:36px auto 0;"></div>
+  </main>
+
+  <div class="features" id="features"></div>
+  <div id="toasts"></div>
+
+  <script src="/app.js"></script>
+  <script>
+    const MODULES = [
+      { emoji: "🛡️", name: "Sécurité", desc: "Anti-nuke, vérification captcha, lockdown anti-raid, whitelist et scan." },
+      { emoji: "⛨", name: "Protection", desc: "Anti-raid avancé, anti-spam, automod et logs détaillés." },
+      { emoji: "🎵", name: "Musique", desc: "Lecture YouTube/SoundCloud, file d'attente, vote-skip, playlists." },
+      { emoji: "🎫", name: "Tickets", desc: "Panels, claim, priorités, transcripts et feedback en étoiles." },
+      { emoji: "💰", name: "Économie", desc: "Monnaie virtuelle, boutique, casino : slots, blackjack, roulette." },
+      { emoji: "🧰", name: "Utilitaires", desc: "Infos serveur, outils pratiques et jeux interactifs." },
+      { emoji: "🔊", name: "Salons vocaux", desc: "Salons vocaux temporaires avec panneau de contrôle." },
+      { emoji: "💾", name: "Backups", desc: "Sauvegarde et restauration complète du serveur." },
+      { emoji: "🐸", name: "Froggy", desc: "Piège à bots spam avec tactiques et classements." },
+      { emoji: "🎉", name: "Communauté", desc: "Giveaways, niveaux, candidatures, prison et invitations." },
+    ];
+    document.getElementById("features").innerHTML = MODULES.map(m =>
+      `<div class="card feature"><div class="femoji">${m.emoji}</div><h3>${m.name}</h3><p>${m.desc}</p></div>`
+    ).join("");
+
+    (async () => {
+      const err = new URLSearchParams(location.search).get("error");
+      if (err) toast("Connexion Discord refusée : " + err, "error");
+      try {
+        const stats = await api("/api/stats");
+        document.getElementById("hero-stats").innerHTML = `
+          <div class="card stat"><div class="num">${stats.guilds}</div><div class="lbl">🖥️ Serveurs</div></div>
+          <div class="card stat"><div class="num">${stats.commands}</div><div class="lbl">⌨️ Commandes</div></div>
+          <div class="card stat"><div class="num">${stats.modules}</div><div class="lbl">🧩 Modules</div></div>`;
+      } catch (e) { /* stats publiques indisponibles */ }
+      const me = await loadUserChip();
+      if (me) window.location.href = "/dashboard";
+    })();
+  </script>
+</body>
+</html>

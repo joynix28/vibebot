@@ -1,0 +1,31 @@
+{
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "dis-backups": "^4.1.1",
+    "discord.js": "^14.27.0",
+    "https-proxy-agent": "^9.1.0",
+    "libsodium-wrappers": "^0.8.4",
+    "play-dl": "^1.9.7",
+    "sharp": "^0.34.0",
+    "undici": "8",
+    "ws": "^8.22.0"
+  },
+  "description": "Bot Discord unifié : sécurité, anti-raid, salons vocaux temporaires, backups, froggy, modération, giveaways, niveaux, tickets, logs + dashboard web",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "module": "index.ts",
+  "name": "fusion-bot",
+  "private": true,
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "bun --watch run index.ts",
+    "start": "bun --preload ./preload.ts index.ts"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "overrides": {
+    "undici": "6.29.0"
+  }
+}
