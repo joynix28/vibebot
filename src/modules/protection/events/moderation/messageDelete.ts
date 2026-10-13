@@ -1,10 +1,11 @@
 import { Events } from "discord.js";
 import type { Message } from "discord.js";
-import { isWhitelisted, saveSnipe } from "../../func/db.ts";
+import { isWhitelisted, saveSnipe, getProtectConfig } from "../../func/db.ts";
 import { FLAGS_V2, msgPanel } from "../../../../core/ui.ts";
 
 // Sauvegarde du dernier message supprimé (snipe) + avertissement ghost-ping
-// quand une mention @everyone/@here est supprimée.
+// quand une mention (@everyone/@here ou utilisateur) est supprimée.
+// Activable/désactivable via /protect-config > Bienvenue > Ghost ping.
 
 export const name = Events.MessageDelete;
 
@@ -29,23 +30,42 @@ export async function execute(message: Message): Promise<void> {
     );
   }
 
-  // Ghost-ping : avertit si une mention everyone/here est supprimée
+  // Ghost-ping : avertit si une mention est supprimée (everyone/here ou
+  // mention d'un utilisateur). Respecte le toggle et les salons configurés
+  // dans /protect-config (Bienvenue > Ghost ping).
   const author = message.author;
   if (!author || author.bot) return;
-  let mentionedEveryone = false;
+  let cfg: ReturnType<typeof getProtectConfig>;
   try {
-    mentionedEveryone = message.mentions?.everyone ?? false;
+    cfg = getProtectConfig(guild.id);
   } catch {
     return;
   }
-  if (!mentionedEveryone) return;
+  if (!cfg.welcome.ghostping.enabled) return;
+  const watched = cfg.welcome.ghostping.channels;
+  if (watched.length > 0 && !watched.includes(message.channelId)) return;
+
+  let mentionedEveryone = false;
+  let mentionedUsers: string[] = [];
+  try {
+    mentionedEveryone = message.mentions?.everyone ?? false;
+    mentionedUsers = [...(message.mentions?.users?.values() ?? [])]
+      .filter((u) => !u.bot && u.id !== author.id)
+      .map((u) => u.id);
+  } catch {
+    return;
+  }
+  if (!mentionedEveryone && mentionedUsers.length === 0) return;
   if (author.id === guild.client.user?.id || isWhitelisted(guild.id, guild.ownerId, author.id)) return;
 
+  const cible = mentionedEveryone
+    ? "une mention @everyone/@here"
+    : mentionedUsers.map((id) => `<@${id}>`).join(" ");
   const channel = message.channel;
   if (!("send" in channel)) return;
   await channel
     .send({
-      components: [msgPanel(`👻 **${author}** — ghost-ping détecté : une mention @everyone/@here a été supprimée.`)],
+      components: [msgPanel(`👻 **${author}** — ghost-ping détecté : ${cible} a été mentionné${mentionedEveryone ? "e" : ""} puis le message a été supprimé.`)],
       flags: FLAGS_V2,
     })
     .catch(() => null);

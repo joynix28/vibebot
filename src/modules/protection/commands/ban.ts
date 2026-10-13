@@ -2,6 +2,7 @@ import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { FLAGS_V2, okPanel } from "../../../core/ui.ts";
 import { addTempban } from "../func/db.ts";
+import { logCase } from "../func/cases.ts";
 import { authorHighestPosition, formatDuration, hasPerm, logMod, needGuild, parseDuration, replyErr } from "./_shared.ts";
 
 export const data = new SlashCommandBuilder()
@@ -62,6 +63,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   }
 
   if (tempMs) addTempban(guild.id, user.id, Date.now() + tempMs);
+  logCase(guild.id, user.id, "ban", reason, interaction.user.id);
 
   const label = tempMs ? `a été banni pendant **${formatDuration(tempMs)}**` : "a été banni définitivement";
   await interaction.reply({

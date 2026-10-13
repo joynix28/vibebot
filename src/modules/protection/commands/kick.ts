@@ -1,6 +1,7 @@
 import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { FLAGS_V2, okPanel } from "../../../core/ui.ts";
+import { logCase } from "../func/cases.ts";
 import { authorHighestPosition, hasPerm, logMod, needGuild, replyErr } from "./_shared.ts";
 
 export const data = new SlashCommandBuilder()
@@ -44,5 +45,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     components: [okPanel(`✅ ${user} a été expulsé du serveur.`)],
     flags: FLAGS_V2,
   });
+  logCase(guild.id, user.id, "kick", reason, interaction.user.id);
   await logMod(guild, `👢 **Kick** — ${user.tag} (\`${user.id}\`) par ${interaction.user} (\`${interaction.user.id}\`) — *${reason}*`);
 }

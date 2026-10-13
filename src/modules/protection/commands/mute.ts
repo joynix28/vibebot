@@ -2,6 +2,7 @@ import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { FLAGS_V2, okPanel } from "../../../core/ui.ts";
 import { getProtectConfig, saveProtectConfig } from "../func/db.ts";
+import { logCase } from "../func/cases.ts";
 import { authorHighestPosition, hasPerm, logMod, needGuild, replyErr } from "./_shared.ts";
 
 export const data = new SlashCommandBuilder()
@@ -78,5 +79,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     components: [okPanel(`✅ ${member} a été rendu muet (rôle ${muteRole}).`)],
     flags: FLAGS_V2,
   });
+  logCase(guild.id, user.id, "mute", reason, interaction.user.id);
   await logMod(guild, `🔇 **Mute** — ${user.tag} (\`${user.id}\`) par ${interaction.user} (\`${interaction.user.id}\`) — *${reason}*`);
 }

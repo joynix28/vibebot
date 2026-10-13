@@ -5,539 +5,359 @@ import {
   AudioPlayerStatus,
   VoiceConnectionStatus,
   entersState,
-  StreamType,
   type VoiceConnection,
+  type AudioPlayer,
   type AudioResource,
 } from "@discordjs/voice";
 import { PermissionFlagsBits } from "discord.js";
 import type {
   ChatInputCommandInteraction,
-  MessageComponentInteraction,
   Guild,
   GuildMember,
+  MessageComponentInteraction,
   VoiceBasedChannel,
 } from "discord.js";
-import playdl from "play-dl";
-import { getSettings } from "./db.ts";
-import { panel, textBlock, msgPanel, BLUE, FLAGS_V2 } from "../../../core/ui.ts";
+import play from "play-dl";
 
-// Gestionnaire de file musicale par serveur (inspiré d'evobot / JMusicBot).
+/** Personne ayant demandé le morceau. */
+export interface TrackRequester {
+  id: string;
+  tag: string;
+}
 
-export interface Song {
+/** Un morceau de la file d'attente. */
+export interface Track {
   title: string;
   url: string;
-  /** Durée en secondes (0 = inconnue / direct). */
-  duration: number;
-  /** ID de l'utilisateur ayant demandé le morceau. */
-  requestedBy: string;
+  durationSec: number;
   thumbnail?: string;
+  requestedBy: TrackRequester;
 }
 
 export type LoopMode = "off" | "track" | "queue";
 
-export const LOOP_LABELS: Record<LoopMode, string> = {
-  off: "désactivée",
-  track: "morceau",
-  queue: "file",
-};
-
-// ---------------------------------------------------------------------------
-// Validation des entrées (sécurité)
-// ---------------------------------------------------------------------------
-
-const MUSIC_HOSTS = new Set([
-  "youtube.com",
-  "www.youtube.com",
-  "youtu.be",
-  "music.youtube.com",
-  "www.music.youtube.com",
-  "soundcloud.com",
-  "www.soundcloud.com",
-  "m.soundcloud.com",
-]);
-
-export const MAX_QUERY_LENGTH = 500;
-
-/** N'accepte que les URLs YouTube / SoundCloud en http(s). */
-export function isAllowedMusicUrl(input: string): boolean {
-  let u: URL;
-  try {
-    u = new URL(input.trim());
-  } catch {
-    return false;
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
-  return MUSIC_HOSTS.has(u.hostname.toLowerCase());
+interface GuildPlayer {
+  queue: Track[];
+  index: number;
+  loop: LoopMode;
+  volume: number;
+  paused: boolean;
+  connection: VoiceConnection | null;
+  audioPlayer: AudioPlayer;
+  current: Track | null;
+  resource: AudioResource | null;
 }
 
-export function sanitizeQuery(query: string): string | null {
-  const q = query.trim().slice(0, MAX_QUERY_LENGTH);
-  return q.length > 0 ? q : null;
+const players = new Map<string, GuildPlayer>();
+
+export const MUSIC_ACCENT = 0x9b59b6;
+/** Délai max pour établir la connexion vocale (utile si l'UDP est bloqué). */
+const VOICE_READY_TIMEOUT = 15_000;
+
+export function fmtDuration(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  return `${h > 0 ? `${h}:` : ""}${mm}:${String(r).padStart(2, "0")}`;
 }
 
-// ---------------------------------------------------------------------------
-// Résolution play-dl
-// ---------------------------------------------------------------------------
+/** État public d'un lecteur (pour les hubs), ou null si inexistant. */
+export interface PlayerState {
+  queue: Track[];
+  index: number;
+  loop: LoopMode;
+  volume: number;
+  paused: boolean;
+  current: Track | null;
+  connected: boolean;
+}
 
-function toSong(title: string | undefined, url: string, duration: number | undefined, requestedBy: string, thumbnail?: string): Song {
+export function getPlayer(guildId: string): GuildPlayer {
+  const existing = players.get(guildId);
+  if (existing) return existing;
+  const audioPlayer = createAudioPlayer();
+  const gp: GuildPlayer = {
+    queue: [],
+    index: 0,
+    loop: "off",
+    volume: 50,
+    paused: false,
+    connection: null,
+    audioPlayer,
+    current: null,
+    resource: null,
+  };
+  audioPlayer.on(AudioPlayerStatus.Idle, () => {
+    void onIdle(guildId).catch((e) => console.error("[music] idle:", e));
+  });
+  audioPlayer.on("error", (e) => {
+    console.error("[music] player error:", (e as Error).message);
+    void onIdle(guildId).catch((err) => console.error("[music] idle:", err));
+  });
+  players.set(guildId, gp);
+  return gp;
+}
+
+export function getState(guildId: string): PlayerState | null {
+  const gp = players.get(guildId);
+  if (!gp) return null;
   return {
-    title: title?.trim() || "Titre inconnu",
-    url,
-    duration: Math.max(0, Math.floor(duration ?? 0)),
-    requestedBy,
-    thumbnail,
+    queue: [...gp.queue],
+    index: gp.index,
+    loop: gp.loop,
+    volume: gp.volume,
+    paused: gp.paused,
+    current: gp.current,
+    connected: gp.connection !== null,
   };
 }
 
-/** Résout une requête : URL YouTube/SoundCloud directe, sinon 1er résultat de recherche. */
-export async function resolveQuery(query: string, requestedBy: string): Promise<Song | null> {
-  const q = sanitizeQuery(query);
-  if (!q) return null;
-  try {
-    if (isAllowedMusicUrl(q)) {
-      const info = await playdl.video_basic_info(q);
-      const v = info.video_details;
-      return toSong(v.title, v.url, v.durationInSec, requestedBy, v.thumbnails?.[0]?.url);
+/** Joue le morceau à `startIndex`, en sautant ceux dont le stream échoue. */
+async function playAt(gp: GuildPlayer, guildId: string, startIndex: number): Promise<void> {
+  let i = startIndex;
+  while (i < gp.queue.length) {
+    const track = gp.queue[i];
+    if (!track) {
+      i++;
+      continue;
     }
-    const results = await playdl.search(q, { limit: 1 });
-    const v = results[0];
-    if (!v) return null;
-    return toSong(v.title, v.url, v.durationInSec, requestedBy, v.thumbnails?.[0]?.url);
-  } catch (err) {
-    console.error("[music] resolveQuery impossible", err instanceof Error ? err.message : err);
-    return null;
+    gp.index = i;
+    gp.current = track;
+    gp.paused = false;
+    try {
+      const s = await play.stream(track.url);
+      const resource = createAudioResource(s.stream, { inputType: s.type, inlineVolume: true });
+      resource.volume?.setVolume(gp.volume / 100);
+      gp.resource = resource;
+      gp.audioPlayer.play(resource);
+      return;
+    } catch (e) {
+      console.error("[music] stream failed, skipping:", track.url, (e as Error).message);
+      gp.queue.splice(i, 1);
+    }
   }
+  stopPlayback(guildId);
 }
 
-/** Recherche les 5 meilleurs résultats (pour /search). */
-export async function searchTracks(query: string, requestedBy: string): Promise<Song[]> {
-  const q = sanitizeQuery(query);
-  if (!q) return [];
-  try {
-    const results = await playdl.search(q, { limit: 5 });
-    return results.map((v) => toSong(v.title, v.url, v.durationInSec, requestedBy, v.thumbnails?.[0]?.url));
-  } catch (err) {
-    console.error("[music] search impossible", err instanceof Error ? err.message : err);
-    return [];
+/** Appelé quand le lecteur devient inactif (fin de morceau ou erreur). */
+async function onIdle(guildId: string): Promise<void> {
+  const gp = players.get(guildId);
+  if (!gp) return;
+  const conn = gp.connection;
+  if (!conn || conn.state.status === VoiceConnectionStatus.Destroyed) {
+    stopPlayback(guildId);
+    return;
   }
+  if (gp.loop === "track" && gp.current) {
+    await playAt(gp, guildId, gp.index);
+    return;
+  }
+  let nextIndex = gp.index + 1;
+  if (nextIndex >= gp.queue.length) {
+    if (gp.loop === "queue" && gp.queue.length > 0) {
+      nextIndex = 0;
+    } else {
+      stopPlayback(guildId);
+      return;
+    }
+  }
+  await playAt(gp, guildId, nextIndex);
 }
 
-// ---------------------------------------------------------------------------
-// File musicale
-// ---------------------------------------------------------------------------
-
-const queues = new Map<string, MusicQueue>();
-
-export class MusicQueue {
-  readonly guildId: string;
-  textChannelId: string;
-  readonly voiceChannelId: string;
-  readonly connection: VoiceConnection;
-  private readonly player = createAudioPlayer();
-  private songs: Song[] = [];
-  private current: Song | null = null;
-  private currentResource: AudioResource | null = null;
-  private forceAdvance = false;
-  private stayTimeout: ReturnType<typeof setTimeout> | null = null;
-  private announceFn: ((text: string) => Promise<void>) | null = null;
-  destroyed = false;
-  loop: LoopMode = "off";
-  volume: number;
-  private skipVotes = new Set<string>();
-
-  constructor(guildId: string, textChannelId: string, voiceChannelId: string, connection: VoiceConnection, volume: number) {
-    this.guildId = guildId;
-    this.textChannelId = textChannelId;
-    this.voiceChannelId = voiceChannelId;
-    this.connection = connection;
-    this.volume = Math.min(100, Math.max(0, Math.round(volume)));
-    connection.subscribe(this.player);
-
-    this.player.on(AudioPlayerStatus.Idle, () => {
-      void this.playNext();
-    });
-    this.player.on("error", (err) => {
-      console.error("[music] erreur lecteur", err.message);
-      void this.playNext();
-    });
-    connection.on(VoiceConnectionStatus.Disconnected, () => {
-      void (async () => {
-        try {
-          await Promise.race([
-            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
-          ]);
-        } catch {
-          this.destroy("déconnexion vocale");
-        }
-      })();
-    });
-  }
-
-  /** Prochains morceaux (sans le morceau en cours). */
-  get upcoming(): Song[] {
-    return [...this.songs];
-  }
-
-  get currentSong(): Song | null {
-    return this.current;
-  }
-
-  get size(): number {
-    return this.songs.length + (this.current ? 1 : 0);
-  }
-
-  get paused(): boolean {
-    return this.player.state.status === AudioPlayerStatus.Paused;
-  }
-
-  get playing(): boolean {
-    return this.player.state.status === AudioPlayerStatus.Playing;
-  }
-
-  async addSongs(songs: Song[]): Promise<void> {
-    if (this.destroyed || songs.length === 0) return;
-    this.songs.push(...songs);
-    this.clearStayTimeout();
-    if (this.player.state.status === AudioPlayerStatus.Idle && !this.current) {
-      await this.playNext();
-    }
-  }
-
-  private async makeResource(song: Song): Promise<AudioResource | null> {
+/**
+ * Rejoint un salon vocal. Lève une Error avec un message clair si la
+ * connexion vocale échoue (ex : UDP bloqué, salon inaccessible).
+ */
+export async function joinVoice(guild: Guild, channel: VoiceBasedChannel): Promise<void> {
+  const gp = getPlayer(guild.id);
+  const conn = gp.connection;
+  const usable =
+    conn &&
+    conn.joinConfig.channelId === channel.id &&
+    conn.state.status !== VoiceConnectionStatus.Destroyed &&
+    conn.state.status !== VoiceConnectionStatus.Disconnected;
+  if (usable) return;
+  if (conn) {
     try {
-      const s = await playdl.stream(song.url);
-      const resource = createAudioResource(s.stream, {
-        inputType: s.type as unknown as StreamType,
-        inlineVolume: true,
-      });
-      resource.volume?.setVolume(this.volume / 100);
-      return resource;
-    } catch (err) {
-      console.error("[music] stream impossible", err instanceof Error ? err.message : err);
-      return null;
-    }
-  }
-
-  private async playNext(): Promise<void> {
-    if (this.destroyed) return;
-    this.clearStayTimeout();
-    const adv = this.forceAdvance;
-    this.forceAdvance = false;
-
-    if (this.current && this.loop === "track" && !adv) {
-      // Rejoue le même morceau.
-    } else {
-      if (this.current && this.loop === "queue") this.songs.push(this.current);
-      this.current = this.songs.shift() ?? null;
-    }
-    this.skipVotes.clear();
-
-    if (!this.current) {
-      this.onQueueEnd();
-      return;
-    }
-    const resource = await this.makeResource(this.current);
-    if (this.destroyed) return;
-    if (!resource) {
-      this.current = null;
-      await this.playNext();
-      return;
-    }
-    this.currentResource = resource;
-    this.player.play(resource);
-  }
-
-  private onQueueEnd(): void {
-    this.currentResource = null;
-    const staySec = Math.max(0, getSettings(this.guildId).stay_time);
-    void this.announce("🎵 **File d'attente terminée.**");
-    if (staySec > 0) {
-      this.stayTimeout = setTimeout(() => this.destroy("file terminée"), staySec * 1000);
-    } else {
-      this.destroy("file terminée");
-    }
-  }
-
-  private clearStayTimeout(): void {
-    if (this.stayTimeout) {
-      clearTimeout(this.stayTimeout);
-      this.stayTimeout = null;
-    }
-  }
-
-  private async announce(text: string): Promise<void> {
-    if (!this.announceFn) return;
-    try {
-      await this.announceFn(text);
-    } catch {
-      /* annonce best effort */
-    }
-  }
-
-  setAnnounceFn(fn: (text: string) => Promise<void>): void {
-    this.announceFn = fn;
-  }
-
-  /** Passe au morceau suivant (ignore la boucle "morceau"). */
-  skip(): boolean {
-    if (!this.current && this.songs.length === 0) return false;
-    this.forceAdvance = true;
-    this.player.stop(true);
-    return true;
-  }
-
-  /** Saute directement au morceau n° `index` (1-based, dans les morceaux à venir). */
-  skipto(index: number): boolean {
-    if (index < 1 || index > this.songs.length) return false;
-    this.songs.splice(0, index - 1);
-    return this.skip();
-  }
-
-  pause(): boolean {
-    return this.player.pause(true);
-  }
-
-  resume(): boolean {
-    return this.player.unpause();
-  }
-
-  shuffle(): void {
-    for (let i = this.songs.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const a = this.songs[i];
-      const b = this.songs[j];
-      if (a !== undefined && b !== undefined) {
-        this.songs[i] = b;
-        this.songs[j] = a;
-      }
-    }
-  }
-
-  /** Déplace le morceau n° `from` (1-based) à la position `to` (1-based). */
-  move(from: number, to: number): boolean {
-    if (from < 1 || from > this.songs.length || to < 1 || to > this.songs.length) return false;
-    const [song] = this.songs.splice(from - 1, 1);
-    if (!song) return false;
-    this.songs.splice(to - 1, 0, song);
-    return true;
-  }
-
-  /** Retire le morceau n° `index` (1-based) de la file. */
-  removeAt(index: number): Song | null {
-    if (index < 1 || index > this.songs.length) return null;
-    const [song] = this.songs.splice(index - 1, 1);
-    return song ?? null;
-  }
-
-  setVolume(v: number): number {
-    this.volume = Math.min(100, Math.max(0, Math.round(v)));
-    this.currentResource?.volume?.setVolume(this.volume / 100);
-    return this.volume;
-  }
-
-  setLoop(mode: LoopMode): void {
-    this.loop = mode;
-  }
-
-  addVote(userId: string): number {
-    this.skipVotes.add(userId);
-    return this.skipVotes.size;
-  }
-
-  voteCount(): number {
-    return this.skipVotes.size;
-  }
-
-  hasVoted(userId: string): boolean {
-    return this.skipVotes.has(userId);
-  }
-
-  nowPlaying(): { song: Song; elapsedMs: number } | null {
-    if (!this.current) return null;
-    return { song: this.current, elapsedMs: this.currentResource?.playbackDuration ?? 0 };
-  }
-
-  destroy(_reason: string): void {
-    if (this.destroyed) return;
-    this.destroyed = true;
-    this.clearStayTimeout();
-    try {
-      this.player.stop(true);
+      conn.destroy();
     } catch {
       /* noop */
     }
-    try {
-      this.connection.destroy();
-    } catch {
-      /* noop */
-    }
-    queues.delete(this.guildId);
+    gp.connection = null;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Accès manager
-// ---------------------------------------------------------------------------
-
-export function getQueue(guildId: string): MusicQueue | undefined {
-  const q = queues.get(guildId);
-  if (q?.destroyed) {
-    queues.delete(guildId);
-    return undefined;
-  }
-  return q;
-}
-
-/** Rejoint le salon vocal de l'utilisateur (ou récupère la file existante). */
-export async function ensureQueue(
-  interaction: ChatInputCommandInteraction | MessageComponentInteraction
-): Promise<{ queue: MusicQueue; voiceChannel: VoiceBasedChannel } | { error: string }> {
-  const guild = interaction.guild;
-  const member = interaction.member as GuildMember | null;
-  if (!guild || !member) return { error: "Cette commande doit être utilisée sur un serveur." };
-  const voiceChannel = member.voice.channel;
-  if (!voiceChannel) return { error: "Tu dois d'abord rejoindre un salon vocal." };
-
-  const me = guild.members.me;
-  const perms = me ? voiceChannel.permissionsFor(me) : null;
-  if (!perms?.has(PermissionFlagsBits.Connect)) return { error: "Je ne peux pas me connecter à ton salon vocal." };
-  if (!perms?.has(PermissionFlagsBits.Speak)) return { error: "Je ne peux pas parler dans ton salon vocal." };
-
-  let queue = getQueue(guild.id);
-  if (queue) {
-    if (queue.connection.state.status === VoiceConnectionStatus.Destroyed) {
-      queue.destroy("reconnexion");
-      queue = undefined;
-    } else if (queue.voiceChannelId !== voiceChannel.id) {
-      return { error: "Tu dois être dans le même salon vocal que moi." };
-    } else {
-      queue.textChannelId = interaction.channelId;
-      wireAnnounce(interaction, queue);
-      return { queue, voiceChannel };
-    }
-  }
-
-  const settings = getSettings(guild.id);
   const connection = joinVoiceChannel({
-    channelId: voiceChannel.id,
+    channelId: channel.id,
     guildId: guild.id,
     adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: true,
   });
+  gp.connection = connection;
+  connection.subscribe(gp.audioPlayer);
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+    await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_TIMEOUT);
   } catch {
-    connection.destroy();
-    return { error: "Connexion au salon vocal impossible. Réessaie." };
-  }
-  const fresh = new MusicQueue(guild.id, interaction.channelId, voiceChannel.id, connection, settings.default_volume);
-  queues.set(guild.id, fresh);
-  wireAnnounce(interaction, fresh);
-  return { queue: fresh, voiceChannel };
-}
-
-/** Branche l'annonce "file terminée" sur le salon texte courant. */
-function wireAnnounce(
-  interaction: ChatInputCommandInteraction | MessageComponentInteraction,
-  queue: MusicQueue
-): void {
-  queue.setAnnounceFn(async (text: string) => {
-    const ch = await interaction.client.channels.fetch(queue.textChannelId).catch(() => null);
-    if (ch && ch.isSendable()) {
-      await ch.send({ components: [msgPanel(text, BLUE)], flags: FLAGS_V2 }).catch(() => {});
+    try {
+      connection.destroy();
+    } catch {
+      /* noop */
     }
-  });
+    gp.connection = null;
+    throw new Error(
+      "Impossible de rejoindre le salon vocal : la connexion audio a échoué " +
+        "(réseau UDP bloqué ou salon inaccessible). Vérifie que le bot a les permissions " +
+        "« Se connecter » et « Parler », puis réessaie."
+    );
+  }
 }
 
-/** Quitte le vocal et supprime la file. */
-export function leave(guildId: string): boolean {
-  const q = getQueue(guildId);
-  if (!q) return false;
-  q.destroy("arrêt demandé");
+/** Ajoute un morceau à la file ; démarre la lecture si rien ne joue. */
+export async function addTrack(
+  guildId: string,
+  track: Track
+): Promise<{ position: number; playing: boolean }> {
+  const gp = getPlayer(guildId);
+  gp.queue.push(track);
+  const position = gp.queue.length;
+  if (!gp.current && gp.audioPlayer.state.status === AudioPlayerStatus.Idle) {
+    await playAt(gp, guildId, gp.queue.length - 1);
+    return { position, playing: true };
+  }
+  return { position, playing: false };
+}
+
+/** Passe au morceau suivant (ignore la boucle "morceau"). */
+export async function skip(guildId: string): Promise<boolean> {
+  const gp = players.get(guildId);
+  if (!gp || !gp.current) return false;
+  let ni = gp.index + 1;
+  if (ni >= gp.queue.length) {
+    if (gp.loop === "queue" && gp.queue.length > 0) {
+      ni = 0;
+    } else {
+      stopPlayback(guildId);
+      return true;
+    }
+  }
+  await playAt(gp, guildId, ni);
   return true;
 }
 
-/** Nettoie la file si le bot est seul (ou déconnecté) dans son salon. */
-export function cleanupIfAlone(guild: Guild): void {
-  const queue = getQueue(guild.id);
-  if (!queue) return;
-  const channel = guild.channels.cache.get(queue.voiceChannelId);
-  if (!channel?.isVoiceBased()) {
-    queue.destroy("salon vocal introuvable");
-    return;
-  }
-  const me = guild.members.me;
-  if (!me?.voice.channel || me.voice.channel.id !== queue.voiceChannelId) {
-    queue.destroy("déconnecté du vocal");
-    return;
-  }
-  const humans = channel.members.filter((m) => !m.user.bot).size;
-  if (humans === 0) queue.destroy("seul dans le salon vocal");
+/** Revient au morceau précédent. */
+export async function previous(guildId: string): Promise<boolean> {
+  const gp = players.get(guildId);
+  if (!gp || !gp.current || gp.index <= 0) return false;
+  await playAt(gp, guildId, gp.index - 1);
+  return true;
 }
 
-// ---------------------------------------------------------------------------
-// Permissions DJ
-// ---------------------------------------------------------------------------
+/** Saute directement au morceau d'index donné. */
+export async function goto(guildId: string, index: number): Promise<boolean> {
+  const gp = players.get(guildId);
+  if (!gp || index < 0 || index >= gp.queue.length) return false;
+  await playAt(gp, guildId, index);
+  return true;
+}
 
-/** Vrai si le membre est DJ (rôle DJ configuré) ou peut gérer les messages. */
-export function canControl(interaction: ChatInputCommandInteraction | MessageComponentInteraction): boolean {
+/** Met en pause / reprend la lecture. */
+export function setPaused(guildId: string, paused: boolean): boolean {
+  const gp = players.get(guildId);
+  if (!gp || !gp.current) return false;
+  if (paused) gp.audioPlayer.pause();
+  else gp.audioPlayer.unpause();
+  gp.paused = paused;
+  return true;
+}
+
+export function setLoop(guildId: string, mode: LoopMode): boolean {
+  const gp = players.get(guildId);
+  if (!gp) return false;
+  gp.loop = mode;
+  return true;
+}
+
+export function setVolume(guildId: string, volume: number): boolean {
+  const gp = players.get(guildId);
+  if (!gp) return false;
+  gp.volume = Math.max(0, Math.min(100, Math.round(volume)));
+  gp.resource?.volume?.setVolume(gp.volume / 100);
+  return true;
+}
+
+/** Mélange la file en gardant le morceau en cours en premier. */
+export function shuffle(guildId: string): boolean {
+  const gp = players.get(guildId);
+  if (!gp || gp.queue.length < 2) return false;
+  const current = gp.current;
+  const rest = gp.queue.filter((t) => t !== current);
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const a = rest[i];
+    const b = rest[j];
+    if (a !== undefined && b !== undefined) {
+      rest[i] = b;
+      rest[j] = a;
+    }
+  }
+  gp.queue = current ? [current, ...rest] : rest;
+  gp.index = 0;
+  return true;
+}
+
+/** Vide la file à venir (le morceau en cours continue). */
+export function clearQueue(guildId: string): boolean {
+  const gp = players.get(guildId);
+  if (!gp || gp.queue.length === 0) return false;
+  if (gp.current) {
+    gp.queue = [gp.current];
+    gp.index = 0;
+  } else {
+    gp.queue = [];
+    gp.index = 0;
+  }
+  return true;
+}
+
+/** Arrête tout : lecture, file, connexion vocale. */
+export function stopPlayback(guildId: string): void {
+  const gp = players.get(guildId);
+  players.delete(guildId);
+  if (!gp) return;
+  try {
+    gp.audioPlayer.stop(true);
+  } catch {
+    /* noop */
+  }
+  if (gp.connection) {
+    try {
+      gp.connection.destroy();
+    } catch {
+      /* noop */
+    }
+  }
+}
+
+/** Quitte le salon vocal et nettoie le lecteur. */
+export function leave(guildId: string): void {
+  stopPlayback(guildId);
+}
+
+/** Salon vocal du membre, ou null s'il n'est dans aucun salon. */
+export function resolveVoiceChannel(
+  interaction: ChatInputCommandInteraction | MessageComponentInteraction
+): VoiceBasedChannel | null {
   const member = interaction.member as GuildMember | null;
-  const guildId = interaction.guildId;
-  if (!member || !guildId) return false;
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-  if (member.permissions.has(PermissionFlagsBits.ManageMessages)) return true;
-  const djRole = getSettings(guildId).dj_role;
-  if (djRole && member.roles.cache.has(djRole)) return true;
-  return false;
+  const channel = member?.voice.channel;
+  if (!channel || !channel.isVoiceBased()) return null;
+  return channel;
 }
 
-/** Nombre de votes nécessaires pour passer un morceau. */
-export function votesNeeded(listenerCount: number, skipPercent: number): number {
-  return Math.max(1, Math.ceil((Math.max(1, listenerCount) * skipPercent) / 100));
-}
-
-/** Nombre d'auditeurs humains dans le salon vocal du bot. */
-export function listenerCount(guild: Guild, voiceChannelId: string): number {
-  const channel = guild.channels.cache.get(voiceChannelId);
-  if (!channel?.isVoiceBased()) return 1;
-  return Math.max(1, channel.members.filter((m) => !m.user.bot).size);
-}
-
-// ---------------------------------------------------------------------------
-// Formatage
-// ---------------------------------------------------------------------------
-
-export function formatDuration(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
-  const ss = String(sec).padStart(2, "0");
-  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
-}
-
-export function progressBar(elapsedMs: number, totalMs: number, width = 18): string {
-  if (!totalMs || totalMs <= 0) return "🔴 EN DIRECT";
-  const ratio = Math.min(1, Math.max(0, elapsedMs / totalMs));
-  const pos = Math.round(ratio * width);
-  return `${"▬".repeat(pos)}🔘${"▬".repeat(Math.max(0, width - pos))}`;
-}
-
-/** Panneau "en cours de lecture" réutilisable (Components V2). */
-export function nowPlayingPanel(queue: MusicQueue): ReturnType<typeof panel> {
-  const np = queue.nowPlaying();
-  if (!np) return panel([textBlock("⏹️ Rien n'est en cours de lecture.")], BLUE);
-  const totalMs = np.song.duration * 1000;
-  const bar = progressBar(np.elapsedMs, totalMs);
-  const pos = `${formatDuration(np.elapsedMs / 1000)} / ${np.song.duration > 0 ? formatDuration(np.song.duration) : "∞"}`;
-  const loopTxt = queue.loop === "off" ? "" : ` • 🔁 ${LOOP_LABELS[queue.loop]}`;
-  return panel(
-    [
-      textBlock(
-        `## 🎵 En cours de lecture\n**[${np.song.title}](${np.song.url})**\n${bar}\n\`${pos}\` • 🔊 ${queue.volume}%${loopTxt}\nDemandé par <@${np.song.requestedBy}>${queue.paused ? "\n⏸️ *En pause* " : ""}`
-      ),
-    ],
-    BLUE
-  );
+/** Vérifie que le bot peut se connecter et parler ; retourne la permission manquante ou null. */
+export function botVoicePerms(channel: VoiceBasedChannel): "connect" | "speak" | null {
+  const me = channel.guild.members.me;
+  const perms = me ? channel.permissionsFor(me) : null;
+  if (!perms?.has(PermissionFlagsBits.Connect)) return "connect";
+  if (!perms?.has(PermissionFlagsBits.Speak)) return "speak";
+  return null;
 }

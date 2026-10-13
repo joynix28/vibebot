@@ -1,21 +1,33 @@
-import type { HubInteraction } from "./_hub.ts";
-import { asQueueInteraction } from "./_hub.ts";
-import { FLAGS_V2, FLAGS_V2_EPHEMERAL, okPanel, errPanel } from "../../../core/ui.ts";
-import { leave, canControl } from "../func/player.ts";
+import { SlashCommandBuilder } from "discord.js";
+import type { ChatInputCommandInteraction } from "discord.js";
+import { FLAGS_V2_EPHEMERAL } from "../../tempvoice/func/ui.ts";
+import { errPanel, okPanel } from "../../../core/ui.ts";
+import { getState, leave } from "../func/player.ts";
 
-export async function runStop(interaction: HubInteraction): Promise<void> {
-  const guild = interaction.guild;
-  if (!guild) {
-    await interaction.reply({ components: [errPanel("Cette commande doit être utilisée sur un serveur.")], flags: FLAGS_V2_EPHEMERAL });
+export const data = new SlashCommandBuilder()
+  .setName("stop")
+  .setDescription("⏹️ Arrête la musique et quitte le salon vocal");
+
+export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({
+      components: [errPanel("Commande utilisable uniquement sur un serveur.")],
+      flags: FLAGS_V2_EPHEMERAL,
+    });
     return;
   }
-  if (!canControl(asQueueInteraction(interaction))) {
-    await interaction.reply({ components: [errPanel("Seul un DJ peut utiliser cette commande.")], flags: FLAGS_V2_EPHEMERAL });
+  const st = getState(guildId);
+  if (!st || (!st.current && st.queue.length === 0)) {
+    await interaction.reply({
+      components: [errPanel("🔇 Rien n'est en cours de lecture.")],
+      flags: FLAGS_V2_EPHEMERAL,
+    });
     return;
   }
-  if (!leave(guild.id)) {
-    await interaction.reply({ components: [errPanel("⏹️ Rien n'est en cours de lecture.")], flags: FLAGS_V2_EPHEMERAL });
-    return;
-  }
-  await interaction.reply({ components: [okPanel("⏹️ Lecture arrêtée, file effacée. À bientôt ! 👋")], flags: FLAGS_V2 });
+  leave(guildId);
+  await interaction.reply({
+    components: [okPanel("⏹️ Lecture arrêtée, file vidée et salon vocal quitté.")],
+    flags: FLAGS_V2_EPHEMERAL,
+  });
 }

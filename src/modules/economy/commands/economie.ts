@@ -121,6 +121,7 @@ const MENU_OPTIONS: { value: string; label: string; emoji: string; description: 
   { value: "crime", label: "Crime", emoji: "🕶️", description: "Gros gain ou amende (risqué)", modal: false },
   { value: "voler", label: "Voler", emoji: "🥷", description: "Vole un membre (très risqué)", modal: true },
   { value: "parier", label: "Parier", emoji: "🪙", description: "Pile ou face : double ou rien", modal: true },
+  { value: "casino", label: "Casino", emoji: "🎰", description: "Section casino : blackjack, roulette, slots", modal: false },
   { value: "slots", label: "Slots", emoji: "🎰", description: "Machine à sous", modal: true },
   { value: "blackjack", label: "Blackjack", emoji: "🃏", description: "Blackjack contre la banque", modal: true },
   { value: "roulette", label: "Roulette", emoji: "🎡", description: "Rouge / noir / vert", modal: true },
@@ -233,6 +234,12 @@ export async function handleComponent(interaction: MessageComponentInteraction):
     return;
   }
 
+  // Boutons de la section casino : economie:casino:<jeu> -> ouvre le modal de mise
+  if (parts[1] === "casino") {
+    await handleCasinoButton(interaction);
+    return;
+  }
+
   if (interaction.customId !== "economie:menu" || !interaction.isStringSelectMenu()) return;
 
   const uid = interaction.user.id;
@@ -251,6 +258,7 @@ export async function handleComponent(interaction: MessageComponentInteraction):
 
   switch (action) {
     case "solde": return doSolde(guildId, interaction.user, send);
+    case "casino": return doCasino(guildId, interaction.user.id, send);
     case "quotidien": return doQuotidien(guildId, uid, send);
     case "travailler": return doTravailler(guildId, uid, send);
     case "boutique": return doBoutique(guildId, send);
@@ -374,6 +382,42 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     }
     default:
       return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Section Casino : panneau avec boutons vers chaque jeu (mise via modal)
+// ---------------------------------------------------------------------------
+
+async function doCasino(guildId: string, uid: string, send: Respond): Promise<void> {
+  const u = getUser(guildId, uid);
+  const cfg = getConfig(guildId);
+  const container = panel(
+    [
+      textBlock(
+        `## 🎰 Casino\n\n*Portefeuille : **${u.wallet.toLocaleString("fr-FR")}** ${cfg.currency_name}*\n\n` +
+          "Choisis un jeu : la mise te sera demandée juste après 👇"
+      ),
+    ],
+    GOLD
+  );
+  container.addActionRowComponents(
+    actionRow(
+      button("economie:casino:blackjack", "Blackjack", ButtonStyle.Primary, "🃏"),
+      button("economie:casino:roulette", "Roulette", ButtonStyle.Primary, "🎡"),
+      button("economie:casino:slots", "Slots", ButtonStyle.Primary, "🎰")
+    )
+  );
+  await send([container]);
+}
+
+/** Boutons economie:casino:<jeu> : ouvre le modal de mise du jeu choisi. */
+async function handleCasinoButton(interaction: MessageComponentInteraction): Promise<void> {
+  if (!interaction.isButton()) return;
+  const game = interaction.customId.split(":")[2] ?? "";
+  const modal = modalFor(game);
+  if (modal) {
+    await interaction.showModal(modal);
   }
 }
 

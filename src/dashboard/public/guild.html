@@ -1,380 +1,325 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#1e1f22">
-  <title>Configuration — Fusion</title>
-  <link rel="stylesheet" href="/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a12">
+<title>Configuration — Fusion Bot</title>
+<link rel="stylesheet" href="/style.css?v=3">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/dashboard"><span class="logo">⚡</span> Fusion</a>
-    <div id="user-chip" class="user-chip" style="display:none;"></div>
-  </header>
+<header class="topbar"><div class="in">
+  <a class="logo" href="/"><span class="mark">⚡</span>Fusion<em>Bot</em></a>
+  <span class="spacer"></span>
+  <span id="me-area"></span>
+</div></header>
 
-  <div class="wrap">
-    <a class="back" href="/dashboard">← Mes serveurs</a>
-    <div class="guild-head" id="guild-head"><div class="skel" style="height:56px;width:220px;"></div></div>
-    <div class="tabs" id="tabs" style="display:none;">
-      <button class="tab" data-tab="overview">📊 Vue d'ensemble</button>
-      <button class="tab" data-tab="modules">🧩 Modules</button>
-      <button class="tab" data-tab="commands">⌨️ Commandes</button>
+<main class="wrap page">
+  <a class="backbtn" href="/dashboard">‹ Mes serveurs</a>
+  <div id="head"><div class="card"><div class="skel" style="height:66px;border-radius:14px"></div></div></div>
+
+  <div class="layout" style="margin-top:4px">
+    <nav class="sidebar" id="sidebar">
+      <a href="#" data-tab="overview" class="active"><span class="ico">🏠</span>Vue d'ensemble</a>
+      <a href="#" data-tab="modules"><span class="ico">🧩</span>Modules</a>
+      <a href="#" data-tab="commands"><span class="ico">⌨️</span>Commandes</a>
+    </nav>
+    <div>
+      <div class="tabs" id="mobiletabs" style="display:none">
+        <button class="tab active" data-tab="overview">🏠 Accueil</button>
+        <button class="tab" data-tab="modules">🧩 Modules</button>
+        <button class="tab" data-tab="commands">⌨️ Commandes</button>
+      </div>
+      <section id="view"></section>
     </div>
-    <div id="tab-content"></div>
   </div>
+</main>
 
-  <nav class="bottomnav" id="bottomnav" style="display:none;">
-    <button data-tab="overview"><span class="bi">📊</span>Accueil</button>
-    <button data-tab="modules"><span class="bi">🧩</span>Modules</button>
-    <button data-tab="commands"><span class="bi">⌨️</span>Commandes</button>
-  </nav>
-  <div id="toasts"></div>
+<nav class="tabbar" id="tabbar">
+  <a href="#" data-tab="overview" class="active"><span class="ico">🏠</span>Accueil</a>
+  <a href="#" data-tab="modules"><span class="ico">🧩</span>Modules</a>
+  <a href="#" data-tab="commands"><span class="ico">⌨️</span>Commandes</a>
+  <a href="/dashboard"><span class="ico">🖥️</span>Serveurs</a>
+</nav>
 
-  <script src="/app.js"></script>
-  <script>
-    const guildId = location.pathname.split("/").filter(Boolean).pop();
-    let G = null;          // données /api/guild/:id
-    let CMDS = [];         // commandes du bot
-    let tab = "overview";
-    let curModule = null;
-    let cmdQ = "", cmdMod = "all";
+<div id="sheet-root"></div>
+<div id="toasts"></div>
 
-    const SECTION_TITLES = {
-      antiraid: "Anti-raid", antispam: "Anti-spam", automod: "Auto-modération",
-      logs: "Salons de logs", ticket: "Tickets", invite: "Arrivées & invitations",
-      tactic: "Tactiques du piège", verify: "Vérification", welcome: "Bienvenue",
-    };
-    const sectionTitle = (k) => SECTION_TITLES[k] || (k ? k.charAt(0).toUpperCase() + k.slice(1) : "");
+<script src="/app.js?v=3"></script>
+<script>
+const _pm = location.pathname.match(/^\/dashboard\/(\d+)/);
+const gid = (_pm && _pm[1]) || new URLSearchParams(location.search).get("id");
+if (!gid) location.href = "/dashboard";
 
-    /* ============ onglets ============ */
-    function setTab(t) {
-      tab = t;
-      document.querySelectorAll("#tabs .tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
-      document.querySelectorAll("#bottomnav button").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
-      if (t === "overview") renderOverview();
-      else if (t === "modules") renderModules(curModule ? "config" : "list");
-      else if (t === "commands") renderCommands();
-      window.scrollTo({ top: 0 });
+let G = null;      // /api/guild/:id
+let CMDS = [];     // /api/guild/:id/commands
+let tab = "overview";
+
+function setTab(name) {
+  tab = name;
+  $$("#tabbar a[data-tab], #sidebar a[data-tab], #mobiletabs .tab").forEach(a =>
+    a.classList.toggle("active", a.dataset.tab === name));
+  if (name === "overview") renderOverview();
+  if (name === "modules") renderModules();
+  if (name === "commands") renderCommands("");
+}
+$$("#tabbar a[data-tab], #sidebar a[data-tab]").forEach(a =>
+  a.addEventListener("click", e => { e.preventDefault(); setTab(a.dataset.tab); window.scrollTo({top:0,behavior:"smooth"}); }));
+
+function modById(mid) { return (G.modules || []).find(m => m.id === mid); }
+
+async function toggleModule(mid, on) {
+  try {
+    const r = await fetch("/api/guild/" + gid + "/modules/" + mid + "/toggle", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ enabled: on })
+    });
+    if (!r.ok) throw new Error();
+    const m = modById(mid); if (m) m.enabled = on;
+    toast(on ? "Module activé ✓" : "Module désactivé");
+  } catch(e) {
+    toast("Échec de la sauvegarde", false);
+    $$('input[data-toggle="' + mid + '"]').forEach(i => { i.checked = !on; });
+  }
+}
+
+function renderHead() {
+  const icon = G.icon ? '<span class="guild-icon"><img src="' + esc(G.icon) + '" alt=""></span>'
+    : '<span class="guild-icon">' + esc((G.name||"?").trim().charAt(0).toUpperCase()) + "</span>";
+  $("#head").innerHTML =
+    '<div class="guild-head">' + icon +
+    '<div style="flex:1;min-width:0"><h1 style="font-size:22px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(G.name) + "</h1>" +
+    '<p class="muted" style="font-size:13.5px">' + (G.memberCount ?? "?") + " membres · " + (G.channelCount ?? "?") + " salons · " + (G.commandCount ?? CMDS.length) + " commandes</p></div></div>";
+  document.title = G.name + " — Fusion Bot";
+}
+
+/* ── Vue d'ensemble ── */
+function renderOverview() {
+  const on = (G.modules||[]).filter(m => m.enabled).length;
+  $("#view").innerHTML =
+    '<div class="stats" style="margin-top:0">' +
+    '<div class="stat"><b>' + (G.memberCount ?? "—") + "</b><span>Membres</span></div>" +
+    '<div class="stat"><b>' + (G.channelCount ?? "—") + "</b><span>Salons</span></div>" +
+    '<div class="stat"><b>' + on + "/" + (G.modules||[]).length + "</b><span>Modules actifs</span></div></div>" +
+    '<h2 class="section-title">🧩 Modules</h2>' +
+    '<div class="grid cols2">' + (G.modules||[]).map(m =>
+      '<div class="card mod-card"><span class="mi">' + esc(m.emoji || "🧩") + '</span>' +
+      '<span class="info"><h3>' + esc(m.name) + '</h3><p>' + esc(m.description || "") + "</p></span>" +
+      switchHTML(m.id, m.enabled) + "</div>").join("") + "</div>" +
+    '<h2 class="section-title">🚀 Actions rapides</h2>' +
+    '<div class="grid cols2">' +
+    '<button class="card pressable row" data-go="commands" style="width:100%;text-align:left"><span class="mi">⌨️</span><span class="info"><h3>Explorer les commandes</h3><p class="muted" style="font-size:13px">' + CMDS.length + ' commandes disponibles</p></span></button>' +
+    '<button class="card pressable row" data-go="modules" style="width:100%;text-align:left"><span class="mi">⚙️</span><span class="info"><h3>Configurer un module</h3><p class="muted" style="font-size:13px">Réglages en direct, sans rechargement</p></span></button></div>';
+  bindToggles($("#view"));
+  $$('#view [data-go]').forEach(b => b.addEventListener("click", () => setTab(b.dataset.go)));
+}
+
+function bindToggles(root) {
+  root.querySelectorAll("input[data-toggle]").forEach(inp => {
+    inp.addEventListener("change", () => toggleModule(inp.dataset.toggle, inp.checked));
+  });
+}
+
+/* ── Modules (liste → panneau config) ── */
+function renderModules() {
+  $("#view").innerHTML =
+    '<p class="muted" style="margin-bottom:12px;font-size:14px">Touchez un module pour ouvrir ses réglages. Tout est sauvegardé automatiquement.</p>' +
+    '<div class="grid cols2">' + (G.modules||[]).map(m =>
+      '<button class="card mod-card pressable" data-open="' + esc(m.id) + '" style="width:100%;text-align:left">' +
+      '<span class="mi">' + esc(m.emoji || "🧩") + '</span>' +
+      '<span class="info"><h3>' + esc(m.name) + '</h3><p>' + esc(m.description || "") + '</p></span>' +
+      '<span onclick="event.stopPropagation()">' + switchHTML(m.id, m.enabled) + "</span>" +
+      '<span class="chev">›</span></button>').join("") + "</div>";
+  bindToggles($("#view"));
+  $$("#view [data-open]").forEach(b => b.addEventListener("click", () => openSheet(b.dataset.open)));
+}
+
+/* ── Commandes (explorateur) ── */
+let cmdFilter = "";
+function renderCommands(q) {
+  cmdFilter = q;
+  const mods = {};
+  (G.modules||[]).forEach(m => mods[m.id] = m);
+  const f = q.toLowerCase();
+  const shown = CMDS.filter(c =>
+    !f || (c.name||"").toLowerCase().includes(f) || (c.description||"").toLowerCase().includes(f));
+  const modIds = [...new Set(CMDS.map(c => c.module).filter(Boolean))];
+  $("#view").innerHTML =
+    '<div class="search"><span class="sico">🔍</span><input class="input" id="cq" type="search" placeholder="Rechercher une commande…" value="' + esc(q) + '" autocomplete="off"></div>' +
+    '<div class="tabs" id="modfilter"><button class="tab active" data-mf="">Toutes</button>' +
+    modIds.map(mid => '<button class="tab" data-mf="' + esc(mid) + '">' + esc(mods[mid] ? mods[mid].emoji + " " + mods[mid].name : mid) + "</button>").join("") + "</div>" +
+    '<p class="muted" style="font-size:13.5px;margin-bottom:10px"><b class="grad-text" id="cmdcount">' + shown.length + "</b> commande" + (shown.length>1?"s":"") + "</p>" +
+    '<div class="grid cols2" id="cmdlist">' + shown.map(c =>
+      '<div class="card cmd-card"><span class="ci">' + esc(c.emoji || (mods[c.module]||{}).emoji || "⌨️") + '</span>' +
+      '<span style="min-width:0"><span class="cmd-name">/' + esc(c.name) + "</span><p>" + esc(c.description || "") + "</p>" +
+      (c.module ? '<span class="badge dim" style="margin-top:6px">' + esc((mods[c.module]||{}).name || c.module) + "</span>" : "") + "</span></div>").join("") +
+    (shown.length ? "" : '<div class="empty"><span class="ei">🔍</span><h3>Aucune commande</h3><p>Essaie un autre mot-clé.</p></div>') + "</div>";
+  $("#cq").addEventListener("input", e => {
+    const mf = ($('#modfilter .tab.active') || {}).dataset || {};
+    applyCmdFilter(e.target.value, mf.mf || "");
+  });
+  $$("#modfilter .tab").forEach(t => t.addEventListener("click", () => {
+    $$("#modfilter .tab").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    applyCmdFilter($("#cq").value, t.dataset.mf || "");
+  }));
+}
+function applyCmdFilter(q, mf) {
+  const mods = {};
+  (G.modules||[]).forEach(m => mods[m.id] = m);
+  const f = q.toLowerCase();
+  const shown = CMDS.filter(c =>
+    (!f || (c.name||"").toLowerCase().includes(f) || (c.description||"").toLowerCase().includes(f)) &&
+    (!mf || c.module === mf));
+  $("#cmdcount").textContent = shown.length;
+  $("#cmdlist").innerHTML = shown.map(c =>
+    '<div class="card cmd-card"><span class="ci">' + esc(c.emoji || (mods[c.module]||{}).emoji || "⌨️") + '</span>' +
+    '<span style="min-width:0"><span class="cmd-name">/' + esc(c.name) + "</span><p>" + esc(c.description || "") + "</p>" +
+    (c.module ? '<span class="badge dim" style="margin-top:6px">' + esc((mods[c.module]||{}).name || c.module) + "</span>" : "") + "</span></div>").join("") +
+    (shown.length ? "" : '<div class="empty"><span class="ei">🔍</span><h3>Aucune commande</h3><p>Essaie un autre mot-clé.</p></div>');
+}
+
+/* ── Panneau de config d'un module (live config) ── */
+let sheetTimer = null;
+function openSheet(mid) {
+  const m = modById(mid);
+  if (!m) return;
+  closeSheet();
+  const root = $("#sheet-root");
+  root.innerHTML = '<div class="backdrop" id="bd"></div><div class="sheet" role="dialog" aria-modal="true">' +
+    '<div class="grab"></div><div class="sheet-head"><span class="mi" style="font-size:28px">' + esc(m.emoji||"🧩") + "</span>" +
+    "<h2>" + esc(m.name) + '</h2><span class="save-state" id="savestate"></span>' +
+    '<button class="sheet-close" id="sclose" aria-label="Fermer">✕</button></div>' +
+    '<div class="sheet-body"><div class="row" style="justify-content:space-between;margin-bottom:18px">' +
+    '<span class="muted" style="font-size:14px">Module ' + (m.enabled ? '<b class="grad-text">activé</b>' : "<b>désactivé</b>") + "</span>" +
+    switchHTML(mid, m.enabled) + "</div>" +
+    '<div id="fields"><div class="skel" style="height:52px;margin-bottom:12px"></div><div class="skel" style="height:52px;margin-bottom:12px"></div><div class="skel" style="height:52px"></div></div></div></div>';
+  $("#bd").addEventListener("click", closeSheet);
+  $("#sclose").addEventListener("click", closeSheet);
+  document.addEventListener("keydown", escClose);
+  bindToggles(root);
+  loadFields(mid);
+}
+function escClose(e) { if (e.key === "Escape") closeSheet(); }
+function closeSheet() {
+  if (sheetTimer) { clearTimeout(sheetTimer); sheetTimer = null; }
+  document.removeEventListener("keydown", escClose);
+  $("#sheet-root").innerHTML = "";
+}
+function setSaveState(kind, label) {
+  const el = $("#savestate"); if (!el) return;
+  el.className = "save-state " + kind;
+  el.innerHTML = kind === "saving" ? '<span class="spin"></span>' + esc(label || "Enregistrement…")
+    : kind === "saved" ? "✓ " + esc(label || "Sauvegardé")
+    : kind === "error" ? "⚠ " + esc(label || "Erreur") : "";
+}
+
+function fieldHTML(f) {
+  const id = "f_" + f.key;
+  const hint = f.hint ? '<div class="hint">' + esc(f.hint) + "</div>" : "";
+  if (f.type === "info") {
+    return '<div class="field"><div class="card" style="padding:14px;font-size:14px"><span class="muted">' + esc(f.label) + "</span></div></div>";
+  }
+  if (f.type === "boolean") {
+    return '<div class="field"><div class="field-row"><div><label style="margin:0" for="' + id + '">' + esc(f.label) + "</label>" + hint +
+      '</div><label class="switch"><input type="checkbox" id="' + id + '" data-key="' + esc(f.key) + '" data-type="boolean"' +
+      (f.value ? " checked" : "") + '><span class="track"></span></label></div></div>';
+  }
+  if (f.type === "channel") {
+    const chans = (G.channels || []).filter(c =>
+      f.kind ? c.kind === f.kind : c.kind !== "category");
+    const opts = '<option value="">— Aucun —</option>' + chans.map(c =>
+      '<option value="' + esc(c.id) + '"' + (String(f.value) === String(c.id) ? " selected" : "") + ">" +
+      (c.kind === "voice" ? "🔊 " : c.kind === "category" ? "📁 " : "#") + esc(c.name) + "</option>").join("");
+    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><select class="input" id="' + id + '" data-key="' + esc(f.key) + '" data-type="channel">' + opts + "</select>" + hint + "</div>";
+  }
+  if (f.type === "role") {
+    const opts = '<option value="">— Aucun —</option>' + (G.roles || []).map(r => {
+      const hex = r.color ? "#" + Number(r.color).toString(16).padStart(6, "0") : "";
+      return '<option value="' + esc(r.id) + '"' + (String(f.value) === String(r.id) ? " selected" : "") + ">" +
+        esc(r.name) + (hex ? " (" + hex + ")" : "") + "</option>";
+    }).join("");
+    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><select class="input" id="' + id + '" data-key="' + esc(f.key) + '" data-type="role">' + opts + "</select>" + hint + "</div>";
+  }
+  if (f.type === "select" && Array.isArray(f.options)) {
+    const opts = f.options.map(o => {
+      const v = typeof o === "object" ? o.value : o, l = typeof o === "object" ? (o.label || o.value) : o;
+      return '<option value="' + esc(v) + '"' + (String(f.value) === String(v) ? " selected" : "") + ">" + esc(l) + "</option>";
+    }).join("");
+    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><select class="input" id="' + id + '" data-key="' + esc(f.key) + '" data-type="select">' + opts + "</select>" + hint + "</div>";
+  }
+  if (f.type === "number") {
+    return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><input class="input" type="number" id="' + id + '" data-key="' + esc(f.key) + '" data-type="number" value="' + esc(f.value ?? "") + '" inputmode="numeric"' + (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" + hint + "</div>";
+  }
+  return '<div class="field"><label for="' + id + '">' + esc(f.label) + '</label><input class="input" type="text" id="' + id + '" data-key="' + esc(f.key) + '" data-type="text" value="' + esc(f.value ?? "") + '"' + (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" + hint + "</div>";
+}
+
+async function loadFields(mid) {
+  try {
+    const s = await fetch("/api/guild/" + gid + "/modules/" + mid + "/schema").then(r => r.json());
+    const box = $("#fields");
+    if (!box) return;
+    if (!s.fields || !s.fields.length) {
+      box.innerHTML = '<div class="empty" style="padding:28px"><span class="ei">⚙️</span><p>Aucun réglage pour ce module.</p></div>';
+      return;
     }
-
-    /* ============ vue d'ensemble ============ */
-    function renderOverview() {
-      const active = G.modules.filter(m => m.enabled).length;
-      document.getElementById("tab-content").innerHTML =
-        `<div class="stats">
-          <div class="stat"><div class="num">${G.memberCount ?? "—"}</div><div class="lbl">👥 Membres</div></div>
-          <div class="stat"><div class="num">${G.channelCount ?? "—"}</div><div class="lbl">💬 Salons</div></div>
-          <div class="stat"><div class="num">${CMDS.length}</div><div class="lbl">⌨️ Commandes</div></div>
-          <div class="stat"><div class="num">${active}/${G.modules.length}</div><div class="lbl">🧩 Modules actifs</div></div>
-        </div>
-        <h2 class="page-title" style="font-size:1.1rem;">Modules</h2>
-        <p class="page-sub">Active ou coupe les fonctionnalités du bot sur ce serveur.</p>
-        <div class="mod-grid">` +
-          G.modules.map(m =>
-            `<div class="card mod-card" data-open="${m.id}">
-              <div class="mod-emoji">${m.emoji || "📦"}</div>
-              <div class="mod-info"><div class="mod-name">${esc(m.name)}</div>
-              <div class="mod-desc">${esc(m.description || "")}</div></div>
-              <div class="mod-foot">
-                <span class="badge ${m.enabled ? "on" : "off"}">${m.enabled ? "Activé" : "Coupé"}</span>
-                <label class="switch" title="Activer / couper"><input type="checkbox" data-toggle="${m.id}"${m.enabled ? " checked" : ""}><span class="track"></span></label>
-              </div>
-            </div>`
-          ).join("") +
-        `</div>`;
-      document.querySelectorAll("[data-toggle]").forEach(cb =>
-        cb.addEventListener("change", (e) => { e.stopPropagation(); toggleModule(cb.dataset.toggle, cb.checked, cb); }));
-      document.querySelectorAll("[data-open]").forEach(card =>
-        card.addEventListener("click", (e) => {
-          if (e.target.closest(".switch")) return;
-          curModule = card.dataset.open;
-          setTab("modules");
-        }));
-    }
-
-    async function toggleModule(id, enabled, cb) {
-      try {
-        await api(`/api/guild/${guildId}/modules/${id}/toggle`, { method: "POST", body: JSON.stringify({ enabled }) });
-        const m = G.modules.find(x => x.id === id);
-        if (m) m.enabled = enabled;
-        toast(enabled ? "Module activé ✔" : "Module coupé", "success");
-        if (tab === "overview") renderOverview();
-        else renderModules("list");
-      } catch (e) {
-        cb.checked = !enabled;
-        toast(e.message, "error");
-      }
-    }
-
-    /* ============ modules ============ */
-    function renderModules(mode) {
-      const box = document.getElementById("tab-content");
-      if (mode === "config" && curModule) { openConfig(curModule); return; }
-      curModule = null;
-      box.innerHTML =
-        `<p class="page-sub">Touche un module pour régler ses options. Tout est aussi réglable sur Discord via les commandes du bot.</p>
-        <div class="mod-grid">` +
-          G.modules.map(m => {
-            const n = CMDS.filter(c => c.moduleId === m.id).length;
-            return `<div class="card mod-card" data-open="${m.id}">
-              <div class="mod-emoji">${m.emoji || "📦"}</div>
-              <div class="mod-info"><div class="mod-name">${esc(m.name)}</div>
-              <div class="mod-desc">${esc(m.description || "")}</div></div>
-              <div class="mod-foot">
-                <span class="badge ${m.enabled ? "on" : "off"}">${m.enabled ? "Activé" : "Coupé"}</span>
-                <span class="chev">›</span>
-              </div>
-            </div>`;
-          }).join("") +
-        `</div>`;
-      box.querySelectorAll("[data-open]").forEach(card =>
-        card.addEventListener("click", () => { curModule = card.dataset.open; openConfig(curModule); }));
-    }
-
-    function hubHint(moduleId) {
-      const cmds = CMDS.filter(c => c.moduleId === moduleId);
-      if (!cmds.length) return "";
-      const names = cmds.slice(0, 8).map(c => `<code>/${esc(c.name)}</code>`).join(" ");
-      const more = cmds.length > 8 ? ` <span style="color:var(--muted)">+${cmds.length - 8} autres</span>` : "";
-      return `<div class="hub-hint">💡 Aussi réglable sur Discord avec : ${names}${more}</div>`;
-    }
-
-    async function openConfig(moduleId) {
-      const box = document.getElementById("tab-content");
-      const meta = G.modules.find(m => m.id === moduleId);
-      box.innerHTML =
-        `<button class="btn btn-sm" id="cfg-back" style="margin-bottom:12px;">← Modules</button>
-         <div id="cfg-zone">${skel(5, 58)}</div>`;
-      document.getElementById("cfg-back").addEventListener("click", () => { curModule = null; renderModules("list"); });
-      let schema;
-      try {
-        schema = await api(`/api/guild/${guildId}/modules/${moduleId}/schema`);
-      } catch (e) {
-        document.getElementById("cfg-zone").innerHTML =
-          `<div class="err-box"><div class="big">😕</div><p>${esc(e.message)}</p></div>`;
-        return;
-      }
-      const zone = document.getElementById("cfg-zone");
-      zone.innerHTML =
-        `<div class="card">
-          <h2>${(meta && meta.emoji || "🧩")} ${esc(schema.title)}</h2>
-          <p class="page-sub" style="margin:6px 0 14px;">Modifie puis touche « Enregistrer ».</p>
-          ${hubHint(moduleId)}
-          <div id="fields">${fieldsHtml(schema.fields)}</div>
-          <div class="save-bar"><button class="btn btn-primary" id="save-btn">💾 Enregistrer</button><span class="save-ok" id="save-ok">✔ Enregistré</span></div>
-        </div>` +
-        (moduleId === "tickets" ? ticketPreviewCard() : "");
-      bindPreviews(schema.fields);
-      document.getElementById("save-btn").addEventListener("click", saveConfig);
-    }
-
-    /* Exemple visuel d'un panel de tickets */
-    function ticketPreviewCard() {
-      return `<div class="card">
-        <h2>🎫 À quoi ressemble un panel</h2>
-        <p class="page-sub" style="margin:6px 0 14px;">Exemple. Crée tes vrais panels avec <code>/ticket-panel</code> sur Discord.</p>
-        <div class="dmsg">
-          <div class="avatar">🎫</div>
-          <div style="flex:1;min-width:0;">
-            <div class="who"><span class="uname">Fusion</span><span class="bot-tag">Bot</span><span class="time">aujourd'hui à 14:32</span></div>
-            <div class="body"><strong>Besoin d'aide ?</strong><br>Ouvre un ticket et notre équipe te répondra vite.</div>
-            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
-              <span style="background:#5865f2;color:#fff;padding:8px 16px;border-radius:4px;font-size:0.85rem;font-weight:600;">📩 Ouvrir un ticket</span>
-              <span style="background:#4e5058;color:#fff;padding:8px 16px;border-radius:4px;font-size:0.85rem;font-weight:600;">❓ Question</span>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    }
-
-    /* ---- rendu des champs ---- */
-    function fieldsHtml(fields) {
-      const infos = fields.filter(f => f.type === "info");
-      const rest = fields.filter(f => f.type !== "info");
-      const groups = [];
-      const seen = {};
-      for (const f of rest) {
-        const dot = f.key.indexOf(".");
-        const gk = dot > 0 ? f.key.slice(0, dot) : "";
-        if (!seen[gk]) { seen[gk] = { key: gk, title: sectionTitle(gk), fields: [] }; groups.push(seen[gk]); }
-        seen[gk].fields.push(f);
-      }
-      let h = infos.map(f => `<div class="info-box">ℹ️ ${esc(String(f.value ?? ""))}</div>`).join("");
-      for (const g of groups) {
-        h += g.title ? `<div class="cfg-section"><h3>${esc(g.title)}</h3>` : `<div class="cfg-section">`;
-        h += g.fields.map(fieldHtml).join("") + `</div>`;
-      }
-      return h;
-    }
-
-    function channelOptions(val) {
-      const kinds = [["text", "Salons textuels", "#"], ["voice", "Salons vocaux", "🔊"], ["category", "Catégories", "📁"]];
-      let h = `<option value="">— Aucun —</option>`;
-      for (const [kind, label, ico] of kinds) {
-        const list = (G.channels || []).filter(c => c.kind === kind);
-        if (!list.length) continue;
-        h += `<optgroup label="${label}">` +
-          list.map(c => `<option value="${c.id}"${String(val) === c.id ? " selected" : ""}>${ico} ${esc(c.name)}</option>`).join("") +
-          `</optgroup>`;
-      }
-      return h;
-    }
-
-    function fieldHtml(f) {
-      const key = esc(f.key), label = esc(f.label);
-      const hint = f.hint ? `<div class="hint">${esc(f.hint)}</div>` : "";
-      const v = f.value;
-      if (f.type === "boolean") {
-        return `<div class="field"><div class="field-row">
-          <div><label class="flabel" for="f-${key}">${label}</label>${hint}</div>
-          <label class="switch"><input type="checkbox" id="f-${key}" data-key="${key}"${v === true ? " checked" : ""}><span class="track"></span></label>
-        </div></div>`;
-      }
-      if (f.type === "number") {
-        return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>
-          <input type="number" id="f-${key}" data-key="${key}" value="${v ?? ""}">${hint}</div>`;
-      }
-      if (f.type === "channel") {
-        return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>
-          <select id="f-${key}" data-key="${key}">${channelOptions(v)}</select>${hint}</div>`;
-      }
-      if (f.type === "role") {
-        const opts = `<option value="">— Aucun —</option>` + (G.roles || []).map(r =>
-          `<option value="${r.id}"${String(v) === r.id ? " selected" : ""}>${esc(r.name)}</option>`).join("");
-        return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>
-          <select id="f-${key}" data-key="${key}">${opts}</select>${hint}</div>`;
-      }
-      // texte : textarea + aperçu si c'est un message
-      const isMsg = /message/i.test(f.key) || /message/i.test(f.label);
-      const input = isMsg
-        ? `<textarea id="f-${key}" data-key="${key}" data-preview="1" placeholder="${esc(f.placeholder || "")}">${esc(String(v ?? ""))}</textarea>`
-        : `<input type="text" id="f-${key}" data-key="${key}" value="${esc(String(v ?? ""))}" placeholder="${esc(f.placeholder || "")}">`;
-      const prev = isMsg
-        ? `<div class="preview-label">👁️ Aperçu dans Discord</div><div id="pv-${key}"></div>` : "";
-      return `<div class="field"><label class="flabel" for="f-${key}">${label}</label>${input}${hint}${prev}</div>`;
-    }
-
-    /* ---- aperçu Discord en direct ---- */
-    function msgPreviewHtml(text) {
-      const vars = { user: "Pseudo", server: G.name, count: "1 234", inviter: "Ami", member: "Nouveau" };
-      let h = esc(text).replace(/\{(\w+)\}/g, (m, k) =>
-        `<span class="mention">@${esc(vars[k] !== undefined ? vars[k] : k)}</span>`);
-      h = h.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
-      const body = h.trim() ? h : `<span style="color:var(--muted)">Écris ton message ci-dessus pour voir l'aperçu…</span>`;
-      return `<div class="dmsg"><div class="avatar">F</div><div style="flex:1;min-width:0;">
-        <div class="who"><span class="uname">Fusion</span><span class="bot-tag">Bot</span><span class="time">aujourd'hui à 14:32</span></div>
-        <div class="body">${body}</div></div></div>`;
-    }
-
-    function bindPreviews(fields) {
-      document.querySelectorAll("[data-preview]").forEach(el => {
-        const pv = document.getElementById("pv-" + el.dataset.key);
-        if (!pv) return;
-        const upd = () => { pv.innerHTML = msgPreviewHtml(el.value); };
-        el.addEventListener("input", upd);
-        upd();
+    box.innerHTML = s.fields.map(fieldHTML).join("");
+    const values = {};
+    s.fields.forEach(f => { values[f.key] = f.value; });
+    box.querySelectorAll("[data-key]").forEach(el => {
+      const key = el.dataset.key, type = el.dataset.type;
+      const push = () => {
+        let v = type === "boolean" ? el.checked : el.value;
+        if (type === "number") v = v === "" ? null : Number(v);
+        values[key] = v;
+        scheduleSave(mid, values);
+      };
+      if (type === "boolean" || el.tagName === "SELECT") el.addEventListener("change", push);
+      else el.addEventListener("input", push);
+    });
+  } catch(e) {
+    const box = $("#fields");
+    if (box) box.innerHTML = '<div class="empty" style="padding:28px"><span class="ei">😵</span><p>Chargement impossible.</p><button class="btn small" onclick="location.reload()">Réessayer</button></div>';
+  }
+}
+function scheduleSave(mid, values) {
+  setSaveState("saving");
+  if (sheetTimer) clearTimeout(sheetTimer);
+  sheetTimer = setTimeout(async () => {
+    try {
+      const r = await fetch("/api/guild/" + gid + "/modules/" + mid + "/config", {
+        method: "POST", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ values })
       });
+      if (!r.ok) throw new Error();
+      setSaveState("saved");
+      setTimeout(() => setSaveState(""), 1800);
+    } catch(e) {
+      setSaveState("error");
+      toast("Échec de la sauvegarde", false);
     }
+  }, 500);
+}
 
-    async function saveConfig() {
-      const values = {};
-      document.querySelectorAll("#fields [data-key]").forEach(el => {
-        const k = el.dataset.key;
-        if (el.type === "checkbox") values[k] = el.checked;
-        else if (el.type === "number") values[k] = el.value === "" ? 0 : Number(el.value);
-        else values[k] = el.value;
-      });
-      const btn = document.getElementById("save-btn");
-      btn.disabled = true;
-      try {
-        await api(`/api/guild/${guildId}/modules/${curModule}/config`, { method: "POST", body: JSON.stringify({ values }) });
-        const ok = document.getElementById("save-ok");
-        if (ok) { ok.style.display = "inline"; setTimeout(() => ok.style.display = "none", 2500); }
-        toast("Enregistré ✔", "success");
-      } catch (e) {
-        toast(e.message, "error");
-      } finally {
-        btn.disabled = false;
-      }
-    }
-
-    /* ============ commandes ============ */
-    function renderCommands() {
-      const box = document.getElementById("tab-content");
-      const mods = [...new Set(CMDS.map(c => c.moduleId))].map(id => {
-        const m = (G.modules || []).find(x => x.id === id);
-        return { id, name: m ? m.name : id, emoji: m ? m.emoji : "📦" };
-      });
-      box.innerHTML =
-        `<div class="searchbar"><input type="text" id="cmd-q" placeholder="🔍 Rechercher… (ex : ticket, musique, ban)" value="${esc(cmdQ)}"></div>
-        <div class="chips" id="cmd-chips">
-          <span class="chip${cmdMod === "all" ? " active" : ""}" data-m="all">Tous</span>
-          ${mods.map(m => `<span class="chip${cmdMod === m.id ? " active" : ""}" data-m="${m.id}">${m.emoji} ${esc(m.name)}</span>`).join("")}
-        </div>
-        <p class="page-sub" style="margin-bottom:12px;">Chaque commande ouvre un menu interactif sur Discord : choisis une action, remplis si besoin, c'est tout.</p>
-        <div id="cmd-list"></div>`;
-      document.getElementById("cmd-q").addEventListener("input", (e) => { cmdQ = e.target.value; renderCmdList(); });
-      box.querySelectorAll("#cmd-chips .chip").forEach(ch =>
-        ch.addEventListener("click", () => {
-          cmdMod = ch.dataset.m;
-          box.querySelectorAll("#cmd-chips .chip").forEach(x => x.classList.toggle("active", x === ch));
-          renderCmdList();
-        }));
-      renderCmdList();
-    }
-
-    function renderCmdList() {
-      const q = cmdQ.trim().toLowerCase();
-      const list = CMDS.filter(c =>
-        (cmdMod === "all" || c.moduleId === cmdMod) &&
-        (!q || c.name.toLowerCase().includes(q) || (c.description || "").toLowerCase().includes(q)));
-      const box = document.getElementById("cmd-list");
-      if (!list.length) {
-        box.innerHTML = `<div class="empty"><div class="big">🔍</div><p>Aucune commande trouvée.</p></div>`;
-        return;
-      }
-      const groups = {};
-      for (const c of list) (groups[c.moduleId] = groups[c.moduleId] || []).push(c);
-      box.innerHTML = Object.entries(groups).map(([mid, cmds]) => {
-        const m = (G.modules || []).find(x => x.id === mid);
-        const title = m ? `${m.emoji} ${esc(m.name)}` : esc(mid);
-        return `<div class="cmd-group"><h3>${title} <span class="count">${cmds.length}</span></h3>` +
-          cmds.map(c => `<div class="cmd"><span class="cname">/${esc(c.name)}</span><span class="cdesc">${esc(c.description || "")}</span></div>`).join("") +
-          `</div>`;
-      }).join("");
-    }
-
-    /* ============ init ============ */
-    (async () => {
-      document.getElementById("tab-content").innerHTML = skel(4, 72);
-      const chipP = loadUserChip();
-      const [gRes, cRes] = await Promise.all([
-        api("/api/guild/" + guildId).catch(e => ({ __err: e.message })),
-        api(`/api/guild/${guildId}/commands`).catch(() => []),
-      ]);
-      await chipP;
-      if (gRes && gRes.__err) {
-        document.getElementById("tab-content").innerHTML =
-          `<div class="err-box"><div class="big">🔒</div><h2>Accès impossible</h2>
-           <p style="color:var(--muted);margin:8px 0 16px;">${esc(gRes.__err)}</p>
-           <a class="btn btn-primary" href="/dashboard">← Mes serveurs</a></div>`;
-        return;
-      }
-      G = gRes;
-      CMDS = Array.isArray(cRes) ? cRes : [];
-      document.title = G.name + " — Fusion";
-      document.getElementById("guild-head").innerHTML =
-        guildIconHtml(G) +
-        `<div><h1 class="page-title" style="margin:0;">${esc(G.name)}</h1>
-         <div class="page-sub" style="margin:0;">${G.memberCount ?? "—"} membres · ${CMDS.length} commandes</div></div>`;
-      document.getElementById("tabs").style.display = "";
-      const bn = document.getElementById("bottomnav");
-      bn.style.display = "";
-      document.querySelectorAll("#tabs .tab").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
-      bn.querySelectorAll("button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
-      setTab("overview");
-    })();
-  </script>
+/* ── Init ── */
+(async () => {
+  if (matchMedia("(min-width:900px)").matches) $("#mobiletabs").style.display = "none";
+  else $("#mobiletabs").style.display = "flex";
+  try {
+    const me = await fetch("/api/me").then(r => r.ok ? r.json() : null);
+    if (!me) { location.href = "/login"; return; }
+    $("#me-area").innerHTML = '<a href="/dashboard"><img class="avatar" src="' + esc(me.avatar) + '" alt=""></a>';
+    const [g, c] = await Promise.all([
+      fetch("/api/guild/" + gid).then(r => { if (!r.ok) throw new Error(); return r.json(); }),
+      fetch("/api/guild/" + gid + "/commands").then(r => r.ok ? r.json() : [])
+    ]);
+    G = g; CMDS = Array.isArray(c) ? c : [];
+    renderHead();
+    setTab("overview");
+  } catch(e) {
+    $("#head").innerHTML = '<div class="empty"><span class="ei">😵</span><h3>Serveur introuvable</h3><p>Tu n\'as peut-être pas les droits, ou le bot n\'est pas sur ce serveur.</p><a class="btn" style="margin-top:16px" href="/dashboard">Retour</a></div>';
+  }
+})();
+</script>
 </body>
 </html>

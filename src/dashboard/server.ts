@@ -17,7 +17,6 @@ import * as legacyDb from "../modules/legacy/func/db.ts";
 import * as tempvoiceDb from "../modules/tempvoice/func/db.ts";
 import * as backupDb from "../modules/backup/func/db.ts";
 import * as froggyDb from "../modules/froggy/func/db.ts";
-import * as musicDb from "../modules/music/func/db.ts";
 import * as ticketsDb from "../modules/tickets/func/db.ts";
 import * as economyDb from "../modules/economy/func/db.ts";
 
@@ -480,52 +479,6 @@ const froggyHandler: SchemaHandler = {
   },
 };
 
-// ---- music (réglages serveur) ----
-
-const musicHandler: SchemaHandler = {
-  get(guildId) {
-    const s = musicDb.getSettings(guildId);
-    return {
-      title: "Musique — lecture, DJ et playlists",
-      fields: [
-        field("dj_role", "Rôle DJ", "role", s.dj_role, "Les DJ peuvent contrôler la musique sans vote."),
-        field("text_channel", "Salon texte dédié", "channel", s.text_channel, "Les commandes musique y sont limitées si défini."),
-        field("voice_channel", "Salon vocal dédié", "channel", s.voice_channel, "Le bot y reste connecté si défini."),
-        field("default_volume", "Volume par défaut", "number", s.default_volume, "0 à 100."),
-        field("skip_percent", "Pourcentage de votes pour skip", "number", s.skip_percent, "1 à 100."),
-        field("stay_time", "Reste dans le salon (secondes)", "number", s.stay_time, "Temps avant déconnexion quand la file est vide."),
-      ],
-    };
-  },
-  set(guildId, values) {
-    const patch: musicDb.SettingsPatch = {};
-    for (const [k, v] of Object.entries(values)) {
-      switch (k) {
-        case "dj_role": patch.dj_role = asText(v); break;
-        case "text_channel": patch.text_channel = asText(v); break;
-        case "voice_channel": patch.voice_channel = asText(v); break;
-        case "default_volume": {
-          const n = Number(v);
-          if (Number.isFinite(n)) patch.default_volume = Math.max(0, Math.min(100, Math.round(n)));
-          break;
-        }
-        case "skip_percent": {
-          const n = Number(v);
-          if (Number.isFinite(n)) patch.skip_percent = Math.max(1, Math.min(100, Math.round(n)));
-          break;
-        }
-        case "stay_time": {
-          const n = Number(v);
-          if (Number.isFinite(n)) patch.stay_time = Math.max(0, Math.min(3600, Math.round(n)));
-          break;
-        }
-        default: break;
-      }
-    }
-    musicDb.saveSettings(guildId, patch);
-  },
-};
-
 // ---- tickets (salon de logs) ----
 
 const ticketsHandler: SchemaHandler = {
@@ -578,7 +531,6 @@ const handlers: Record<string, SchemaHandler> = {
   tempvoice: tempvoiceHandler,
   backup: backupHandler,
   froggy: froggyHandler,
-  music: musicHandler,
   tickets: ticketsHandler,
   economy: economyHandler,
 };
@@ -717,6 +669,7 @@ async function apiStats(client: Client): Promise<Response> {
     commands: client.commands?.size ?? 0,
     modules: metas.length,
     uptime: Math.floor(process.uptime()),
+    gateway: client.ws.status === 0 ? "connected" : "disconnected",
   });
 }
 

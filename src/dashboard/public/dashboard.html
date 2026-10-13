@@ -1,73 +1,72 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#1e1f22">
-  <title>Mes serveurs — Fusion</title>
-  <link rel="stylesheet" href="/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a12">
+<title>Mes serveurs — Fusion Bot</title>
+<link rel="stylesheet" href="/style.css?v=3">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/dashboard"><span class="logo">⚡</span> Fusion</a>
-    <div id="user-chip" class="user-chip" style="display:none;"></div>
-  </header>
+<header class="topbar"><div class="in">
+  <a class="logo" href="/"><span class="mark">⚡</span>Fusion<em>Bot</em></a>
+  <span class="spacer"></span>
+  <span id="me-area"></span>
+  <a class="btn small ghost" href="/logout">Déconnexion</a>
+</div></header>
 
-  <div class="wrap">
-    <h1 class="page-title">Mes serveurs</h1>
-    <p class="page-sub">Serveurs où tu as la permission « Gérer le serveur » et où le bot est présent.</p>
-    <div class="stats" id="stats" style="display:none;"></div>
-    <div id="content"></div>
+<main class="wrap page">
+  <h1 style="font-size:26px;font-weight:900;margin-bottom:4px">Mes serveurs</h1>
+  <p class="muted" style="margin-bottom:6px;font-size:14.5px">Choisis un serveur pour le configurer.</p>
+
+  <div class="search"><span class="sico">🔍</span><input class="input" id="q" type="search" placeholder="Rechercher un serveur…" autocomplete="off"></div>
+
+  <div id="list" class="grid">
+    <div class="card"><div class="skel" style="height:58px;border-radius:14px"></div></div>
+    <div class="card"><div class="skel" style="height:58px;border-radius:14px"></div></div>
+    <div class="card"><div class="skel" style="height:58px;border-radius:14px"></div></div>
   </div>
-  <div id="toasts"></div>
+</main>
 
-  <script src="/app.js"></script>
-  <script>
-    (async () => {
-      await loadUserChip();
-      const box = document.getElementById("content");
-      box.innerHTML = skel(4, 76);
+<div id="toasts"></div>
 
-      // Stats + serveurs en parallèle
-      const [stats, guilds] = await Promise.all([
-        api("/api/stats").catch(() => null),
-        api("/api/guilds").catch((e) => ({ __err: e.message })),
-      ]);
-
-      if (stats) {
-        const el = document.getElementById("stats");
-        el.style.display = "";
-        el.innerHTML =
-          `<div class="stat"><div class="num">${stats.guilds}</div><div class="lbl">🖥️ Serveurs</div></div>` +
-          `<div class="stat"><div class="num">${stats.members}</div><div class="lbl">👥 Membres</div></div>` +
-          `<div class="stat"><div class="num">${stats.commands}</div><div class="lbl">⌨️ Commandes</div></div>` +
-          `<div class="stat"><div class="num">${stats.modules}</div><div class="lbl">🧩 Modules</div></div>`;
-      }
-
-      if (guilds && guilds.__err) {
-        box.innerHTML = `<div class="err-box"><div class="big">😕</div><p>${esc(guilds.__err)}</p></div>`;
-        return;
-      }
-      if (!guilds || guilds.length === 0) {
-        let invite = "";
-        try {
-          const pub = await api("/api/public");
-          if (pub && pub.clientId) {
-            invite = `<a class="btn btn-primary btn-block" style="margin-top:16px;" target="_blank" rel="noopener" ` +
-              `href="https://discord.com/oauth2/authorize?client_id=${pub.clientId}&scope=bot%20applications.commands&permissions=8">➕ Inviter le bot</a>`;
-          }
-        } catch (e) {}
-        box.innerHTML = `<div class="empty"><div class="big">🏝️</div>
-          <p><strong>Aucun serveur disponible.</strong><br>Ajoute le bot sur un serveur où tu as la permission « Gérer le serveur ».</p>${invite}</div>`;
-        return;
-      }
-      box.innerHTML = guilds.map(g =>
-        `<a class="guild-row" href="/dashboard/${g.id}">` +
-          guildIconHtml(g) +
-          `<div><div class="gname">${esc(g.name)}</div><div class="gsub">Configurer →</div></div>` +
-          `<span class="chev">›</span></a>`
-      ).join("");
-    })();
-  </script>
+<script src="/app.js?v=3"></script>
+<script>
+let guilds = [];
+function iconHTML(g) {
+  if (g.icon) return '<span class="guild-icon"><img src="' + g.icon + '" alt="" loading="lazy"></span>';
+  const init = (g.name || "?").trim().charAt(0).toUpperCase();
+  return '<span class="guild-icon">' + init + '</span>';
+}
+function render(filter) {
+  const list = $("#list");
+  const f = (filter || "").toLowerCase();
+  const shown = guilds.filter(g => !f || (g.name || "").toLowerCase().includes(f));
+  if (!shown.length) {
+    list.innerHTML = '<div class="empty"><span class="ei">🏝️</span><h3>Aucun serveur trouvé</h3><p>' +
+      (guilds.length ? "Essaie un autre mot-clé." : "Invite le bot sur ton serveur, puis reviens ici.") + '</p></div>';
+    return;
+  }
+  list.innerHTML = shown.map(g =>
+    '<a class="card guild-card pressable" href="/dashboard/' + g.id + '">' +
+    iconHTML(g) +
+    '<span class="info"><h3></h3><p>' + (g.memberCount != null ? g.memberCount + " membres" : "") + '</p></span>' +
+    '<span class="badge green">● en ligne</span><span class="chev">›</span></a>'
+  ).join("");
+  shown.forEach((g, i) => { list.children[i].querySelector("h3").textContent = g.name || "Serveur"; });
+}
+(async () => {
+  try {
+    const me = await fetch("/api/me").then(r => r.ok ? r.json() : null);
+    if (!me) { location.href = "/login"; return; }
+    $("#me-area").innerHTML = '<img class="avatar" src="' + me.avatar + '" alt="">';
+    guilds = await fetch("/api/guilds").then(r => r.json());
+    render("");
+  } catch(e) {
+    $("#list").innerHTML = '<div class="empty"><span class="ei">😵</span><h3>Impossible de charger</h3><p>Vérifie ta connexion et réessaie.</p><button class="btn" style="margin-top:16px" onclick="location.reload()">Réessayer</button></div>';
+  }
+  $("#q").addEventListener("input", e => render(e.target.value));
+})();
+</script>
 </body>
 </html>

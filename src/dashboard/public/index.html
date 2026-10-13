@@ -1,66 +1,76 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#1e1f22">
-  <title>Fusion — Dashboard</title>
-  <link rel="stylesheet" href="/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a12">
+<title>Fusion Bot — Le bot Discord tout-en-un</title>
+<link rel="stylesheet" href="/style.css?v=3">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/"><span class="logo">⚡</span> Fusion</a>
-    <div>
-      <a id="login-btn" class="btn btn-primary btn-sm" href="/login" style="display:none;">Se connecter</a>
-      <div id="user-chip" class="user-chip" style="display:none;"></div>
+<header class="topbar"><div class="in">
+  <a class="logo" href="/"><span class="mark">⚡</span>Fusion<em>Bot</em></a>
+  <span class="spacer"></span>
+  <span id="me-area"></span>
+  <a class="btn small" href="/login" id="login-btn">Se connecter</a>
+</div></header>
+
+<main class="wrap">
+  <section class="hero">
+    <span class="badge pill">🟣 Bot Discord tout-en-un</span>
+    <h1>Un seul bot.<br><span class="grad-text">Tout ton serveur.</span></h1>
+    <p>Sécurité, tickets, musique, économie, backups, salons vocaux temporaires… Fusion Bot rassemble 12 bots en un seul, avec une interface moderne et un dashboard complet.</p>
+    <div class="cta">
+      <a class="btn" href="/login">🚀 Se connecter avec Discord</a>
+      <a class="btn ghost" href="/dashboard">Voir mes serveurs</a>
     </div>
-  </header>
-
-  <main class="hero">
-    <div class="logo-big">⚡</div>
-    <h1>Fusion Bot</h1>
-    <p>Un seul bot pour tout ton serveur : sécurité, musique, tickets, économie, salons vocaux, backups et communauté. Configure tout ici, ou directement sur Discord.</p>
-    <div>
-      <a class="btn btn-primary" href="/login" style="font-size:1rem;padding:13px 28px;">🔗 Se connecter avec Discord</a>
+    <div class="stats" id="stats">
+      <div class="stat"><b class="skel" style="height:38px">&nbsp;</b><span>Serveurs</span></div>
+      <div class="stat"><b class="skel" style="height:38px">&nbsp;</b><span>Membres</span></div>
+      <div class="stat"><b class="skel" style="height:38px">&nbsp;</b><span>Commandes</span></div>
     </div>
-    <div class="stats" id="hero-stats" style="max-width:520px;margin:32px auto 0;"></div>
-  </main>
+  </section>
 
-  <div class="feat-grid" id="features"></div>
-  <div id="toasts"></div>
+  <h2 class="section-title">✨ Ce que Fusion Bot fait pour toi</h2>
+  <section class="features">
+    <div class="feat"><span class="fi">🛡️</span><h3>Anti-raid &amp; sécurité</h3><p>Protection automatique contre les raids, les liens suspects et le spam. Configure tout depuis le dashboard.</p></div>
+    <div class="feat"><span class="fi">🎫</span><h3>Tickets avancés</h3><p>Système de tickets complet avec panneaux, catégories et transcripts, sans quitter Discord.</p></div>
+    <div class="feat"><span class="fi">🎵</span><h3>Musique</h3><p>Lis tes sons préférés dans les salons vocaux avec files d'attente et contrôles simples.</p></div>
+    <div class="feat"><span class="fi">💰</span><h3>Économie &amp; jeux</h3><p>Monnaie virtuelle, boutique, classements et mini-jeux pour animer ta communauté.</p></div>
+    <div class="feat"><span class="fi">💾</span><h3>Backups</h3><p>Sauvegarde et restaure la structure de ton serveur en un clic, sans stress.</p></div>
+    <div class="feat"><span class="fi">🎙️</span><h3>Salons vocaux temporaires</h3><p>Des salons vocaux privés créés automatiquement, gérés par tes membres.</p></div>
+  </section>
 
-  <script src="/app.js"></script>
-  <script>
-    const MODULES = [
-      { e: "🛡️", n: "Sécurité", d: "Anti-nuke, vérification captcha, whitelist." },
-      { e: "⛨", n: "Protection", d: "Anti-raid, anti-spam et logs détaillés." },
-      { e: "🎵", n: "Musique", d: "File d'attente, vote-skip, playlists." },
-      { e: "🎫", n: "Tickets", d: "Panels, claim, priorités, transcripts." },
-      { e: "💰", n: "Économie", d: "Monnaie, boutique, slots, blackjack." },
-      { e: "🧰", n: "Utilitaires", d: "Infos, outils pratiques, mini-jeux." },
-      { e: "🔊", n: "Salons vocaux", d: "Salons temporaires automatiques." },
-      { e: "💾", n: "Backups", d: "Sauvegarde et restauration du serveur." },
-      { e: "🐸", n: "Froggy", d: "Piège à bots spam." },
-      { e: "🎉", n: "Communauté", d: "Giveaways, niveaux, invitations." },
-    ];
-    document.getElementById("features").innerHTML = MODULES.map(m =>
-      `<div class="feat"><div class="fe">${m.e}</div><h3>${m.n}</h3><p>${m.d}</p></div>`
-    ).join("");
+  <section class="card" style="margin-bottom:40px;text-align:center">
+    <h3 style="margin-bottom:8px">⚙️ Tout se configure en direct</h3>
+    <p class="muted" style="margin-bottom:18px;font-size:14.5px">Chaque réglage est sauvegardé instantanément. Zéro rechargement, zéro bouton « sauvegarder ».</p>
+    <a class="btn" href="/login">Commencer maintenant</a>
+  </section>
+</main>
 
-    (async () => {
-      const err = new URLSearchParams(location.search).get("error");
-      if (err) toast("Connexion Discord refusée : " + err, "error");
-      try {
-        const s = await api("/api/stats");
-        document.getElementById("hero-stats").innerHTML =
-          `<div class="stat"><div class="num">${s.guilds}</div><div class="lbl">🖥️ Serveurs</div></div>` +
-          `<div class="stat"><div class="num">${s.commands}</div><div class="lbl">⌨️ Commandes</div></div>` +
-          `<div class="stat"><div class="num">${s.members}</div><div class="lbl">👥 Membres</div></div>` +
-          `<div class="stat"><div class="num">${s.modules}</div><div class="lbl">🧩 Modules</div></div>`;
-      } catch (e) { /* stats indisponibles */ }
-      const me = await loadUserChip();
-      if (me) window.location.href = "/dashboard";
-    })();
-  </script>
+<footer class="site"><div class="wrap">Fusion Bot © 2026 — Conçu pour les communautés Discord exigeantes.</div></footer>
+
+<script>
+(async () => {
+  try {
+    const s = await fetch("/api/stats").then(r => r.json());
+    document.getElementById("stats").innerHTML =
+      '<div class="stat"><b>' + (s.guilds ?? "—") + '</b><span>Serveurs</span></div>' +
+      '<div class="stat"><b>' + (s.members ?? "—") + '</b><span>Membres</span></div>' +
+      '<div class="stat"><b>' + (s.commands ?? "—") + '</b><span>Commandes</span></div>';
+  } catch(e) {
+    document.getElementById("stats").innerHTML =
+      '<div class="stat"><b>—</b><span>Serveurs</span></div><div class="stat"><b>—</b><span>Membres</span></div><div class="stat"><b>—</b><span>Commandes</span></div>';
+  }
+  try {
+    const me = await fetch("/api/me").then(r => r.ok ? r.json() : null);
+    if (me && me.username) {
+      document.getElementById("login-btn").style.display = "none";
+      document.getElementById("me-area").innerHTML =
+        '<a href="/dashboard" class="row" style="gap:8px"><img class="avatar" src="' + me.avatar + '" alt=""><b style="font-size:14px">' + me.username + '</b></a>';
+    }
+  } catch(e) {}
+})();
+</script>
 </body>
 </html>
