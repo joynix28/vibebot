@@ -691,13 +691,17 @@ async function apiMe(req: Request): Promise<Response> {
 async function apiGuilds(client: Client, req: Request): Promise<Response> {
   const session = getSession(req);
   if (!session) return json({ error: "Non connecté." }, 401);
-  const out: { id: string; name: string; icon: string | null }[] = [];
-  for (const og of session.guilds) {
-    if (!canManage(og)) continue;
-    const guild = await fetchGuild(client, og.id);
-    if (!guild) continue; // le bot doit être sur le serveur
-    out.push({ id: og.id, name: guild.name, icon: guildIconUrl(og.id, og.icon) });
-  }
+  const manageable = session.guilds.filter(canManage);
+  // Parallèle + cache d'abord : évite N appels API séquentiels (lent).
+  const results = await Promise.all(
+    manageable.map(async (og) => {
+      const cached = client.guilds.cache.get(og.id);
+      const guild = cached ?? (await fetchGuild(client, og.id).catch(() => null));
+      if (!guild) return null; // le bot doit être sur le serveur
+      return { id: og.id, name: guild.name, icon: guildIconUrl(og.id, og.icon) };
+    })
+  );
+  const out = results.filter((g): g is { id: string; name: string; icon: string | null } => g !== null);
   out.sort((a, b) => a.name.localeCompare(b.name));
   return json(out);
 }
